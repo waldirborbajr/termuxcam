@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,22 +10,25 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
 const (
-	cameraID       = "1"
-	captureTimeout = 20 * time.Second
-	uploadTimeout  = 30 * time.Second
+	cameraID         = "1"
+	captureTimeout   = 20 * time.Second
+	uploadTimeout    = 30 * time.Second
+	intervalDuration = 5 * time.Minute
 )
 
 var (
-	homeDir, _   = os.UserHomeDir()
-	outputDir    = filepath.Join(homeDir, "camera_captures")
-	logFilePath  = filepath.Join(outputDir, "capture.log")
-	tgBotToken   = os.Getenv("TG_BOT_TOKEN")
-	tgChatID     = os.Getenv("TG_CHAT_ID")
+	homeDir, _  = os.UserHomeDir()
+	outputDir   = filepath.Join(homeDir, "camera_captures")
+	logFilePath = filepath.Join(outputDir, "capture.log")
+	tgBotToken  = os.Getenv("TG_BOT_TOKEN")
+	tgChatID    = os.Getenv("TG_CHAT_ID")
 )
 
 func logMsg(msg string) {
@@ -43,6 +47,22 @@ func logMsg(msg string) {
 	f.WriteString(line + "\n")
 }
 
+func acquireWakeLock() {
+	if err := exec.Command("termux-wake-lock").Run(); err != nil {
+		logMsg(fmt.Sprintf("failed to acquire wake-lock: %v", err))
+		return
+	}
+	logMsg("wake-lock acquired")
+}
+
+func releaseWakeLock() {
+	if err := exec.Command("termux-wake-unlock").Run(); err != nil {
+		logMsg(fmt.Sprintf("failed to release wake-lock: %v", err))
+		return
+	}
+	logMsg("wake-lock released")
+}
+
 func capturePhoto() (string, error) {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return "", err
@@ -51,7 +71,7 @@ func capturePhoto() (string, error) {
 	ts := time.Now().Format("20060102_150405")
 	outfile := filepath.Join(outputDir, fmt.Sprintf("capture_%s.jpg", ts))
 
-	ctx, cancel := newTimeoutContext(captureTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "termux-camera-photo", "-c", cameraID, outfile)
@@ -136,15 +156,10 @@ func sendToTelegram(photoPath string) bool {
 	return true
 }
 
-func main() {
-	if tgBotToken == "" || tgChatID == "" {
-		logMsg("TG_BOT_TOKEN / TG_CHAT_ID not set — aborting")
-		os.Exit(1)
-	}
-
+func runOnce() {
 	photo, err := capturePhoto()
 	if err != nil {
-		os.Exit(1)
+		return
 	}
 
 	if sendToTelegram(photo) {
@@ -155,5 +170,35 @@ func main() {
 		}
 	} else {
 		logMsg("keeping local file (upload failed)")
+	}
+}
+
+func main() {
+	if tgBotToken == "" || tgChatID == "" {
+		logMsg("TG_BOT_TOKEN / TG_CHAT_ID not set — aborting")
+		os.Exit(1)
+	}
+
+	acquireWakeLock()
+	defer releaseWakeLock()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	ticker := time.NewTicker(intervalDuration)
+	defer ticker.Stop()
+
+	logMsg(fmt.Sprintf("starting capture loop every %s", intervalDuration))
+
+	runOnce() // capture immediately on start, then wait for ticker
+
+	for {
+		select {
+		case <-ticker.C:
+			runOnce()
+		case sig := <-sigCh:
+			logMsg(fmt.Sprintf("received signal %v, shutting down", sig))
+			return
+		}
 	}
 }
