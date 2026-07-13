@@ -69,6 +69,7 @@ func capturePhoto() (string, error) {
 	}
 
 	ts := time.Now().Format("20060102_150405")
+	// ts := time.Now().Format("20060102_150405")
 	outfile := filepath.Join(outputDir, fmt.Sprintf("capture_%s.jpg", ts))
 
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
