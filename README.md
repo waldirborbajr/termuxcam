@@ -26,6 +26,7 @@ go env GOPATH
 
 ```sh
 echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.bashrc
+
 source ~/.bashrc
 ```
 ### (swap .bashrc for .zshrc if you're on zsh in Termux)
@@ -53,6 +54,7 @@ export TG_BOT_TOKEN="123456:ABC-your-token"
 export TG_CHAT_ID="your_chat_id"
 exec /data/data/com.termux/files/home/capture_loop
 EOF
+
 chmod +x ~/.termux/service/capture_loop/run
 ```
 
@@ -60,6 +62,7 @@ chmod +x ~/.termux/service/capture_loop/run
 
 ```
 shsv-enable capture_loop
+
 sv up capture_loop
 ```
 
@@ -67,6 +70,12 @@ sv up capture_loop
 
 ```
 shsv status capture_loop
+
 tail -f ~/.termux/var/service/capture_loop/log/main/current
 ```
 
+# How to build
+
+```
+go build -o termuxcapture main.go context.go
+```
