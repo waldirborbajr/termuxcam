@@ -4,8 +4,9 @@ GO project to access frontal camera from termux
 
 ## 1. Install
 
-```
-shpkg update
+```sh
+pkg update
+
 pkg install golang
 ```
 
@@ -60,16 +61,16 @@ chmod +x ~/.termux/service/capture_loop/run
 
 ### 4. Habilitar e iniciar:
 
-```
-shsv-enable capture_loop
+```sh
+sv-enable capture_loop
 
 sv up capture_loop
 ```
 
 ### 5. Verificar status / logs:
 
-```
-shsv status capture_loop
+```sh
+sv status capture_loop
 
 tail -f ~/.termux/var/service/capture_loop/log/main/current
 ```
