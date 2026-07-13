@@ -1,3 +1,8 @@
+<p align="center">
+  <img width="256" height="256" src="./assets/logo.png" />
+</p>
+<h1 align="center">TMS, A clean, fast, and modern tmux session manager written in Go</h1>
+
 # termuxcam
 
 Periodic front-camera capture on Android, running natively in Termux (no root required), with automatic upload to Telegram and cleanup of the local file once the upload is confirmed.
