@@ -183,7 +183,9 @@ cat <<'EOF' > ~/.termux/service/termuxcam/run
 export TG_BOT_TOKEN="YOUR_TOKEN"
 export TG_CHAT_ID="YOUR_CHAT_ID"
 
-exec /data/data/com.termux/files/home/bins/termuxcam
+#exec /data/data/com.termux/files/home/bins/termuxcam
+exec /data/data/com.termux/files/home/bins/termuxcam \
+    >> /data/data/com.termux/files/home/termuxcam.log 2>&1
 EOF
 ```
 
