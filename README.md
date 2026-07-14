@@ -1,4 +1,3 @@
-
 <p align="center">
   <img width="256" height="256" src="./assets/logo.png" />
 </p>
@@ -169,17 +168,31 @@ Save both values:
 
 ## 7. Build
 
-Inside the repository:
+Create a personal binaries directory:
 
 ```sh
-go build -o termuxcam main.go context.go
+mkdir -p ~/bins
+```
+
+Build directly into the binaries directory:
+
+```sh
+go build -o ~/bins/termuxcam main.go context.go
 ```
 
 Verify:
 
 ```sh
-ls -lh termuxcam
+ls -lh ~/bins/termuxcam
 ```
+
+Expected:
+
+```text
+-rwxr-xr-x
+```
+
+> **Note:** This guide assumes all personal binaries are stored in `~/bins`. If you already maintain a different binaries directory, adjust the paths accordingly.
 
 ---
 
@@ -191,7 +204,7 @@ Before configuring a service, verify everything works.
 export TG_BOT_TOKEN="YOUR_TOKEN"
 export TG_CHAT_ID="YOUR_CHAT_ID"
 
-./termuxcam
+~/bins/termuxcam
 ```
 
 Confirm:
@@ -236,22 +249,7 @@ Expected:
 
 ## 10. Install termuxcam as a Service
 
-### 10.1 Copy the Binary
-
-```sh
-cp termuxcam ~/termuxcam
-chmod +x ~/termuxcam
-```
-
-Verify:
-
-```sh
-ls -l ~/termuxcam
-```
-
----
-
-### 10.2 Create the Service Directory
+### 10.1 Create the Service Directory
 
 ```sh
 mkdir -p ~/.termux/service/termuxcam
@@ -266,7 +264,7 @@ ls -la ~/.termux/service/termuxcam
 
 ---
 
-### 10.3 Create the Run Script
+### 10.2 Create the Run Script
 
 ```sh
 cat <<'EOF' > ~/.termux/service/termuxcam/run
@@ -275,7 +273,7 @@ cat <<'EOF' > ~/.termux/service/termuxcam/run
 export TG_BOT_TOKEN="YOUR_TOKEN"
 export TG_CHAT_ID="YOUR_CHAT_ID"
 
-exec /data/data/com.termux/files/home/termuxcam
+exec /data/data/com.termux/files/home/bins/termuxcam
 EOF
 ```
 
@@ -299,7 +297,7 @@ Expected:
 
 ---
 
-### 10.4 Enable the Service
+### 10.3 Enable the Service
 
 ```sh
 sv-enable termuxcam
@@ -307,7 +305,7 @@ sv-enable termuxcam
 
 ---
 
-### 10.5 Start the Service
+### 10.4 Start the Service
 
 ```sh
 sv up termuxcam
@@ -327,7 +325,7 @@ run: termuxcam: (pid XXXX) ...
 
 ---
 
-### 10.6 View Logs
+### 10.5 View Logs
 
 ```sh
 tail -f ~/.termux/var/service/termuxcam/log/main/current
@@ -414,7 +412,7 @@ mkdir -p ~/.termux/service/termuxcam
 Make the files executable:
 
 ```sh
-chmod +x ~/termuxcam
+chmod +x ~/bins/termuxcam
 chmod +x ~/.termux/service/termuxcam/run
 ```
 
@@ -442,6 +440,26 @@ termux-camera-info
 
 and ensure the Termux:API application has Camera permission.
 
+### Service cannot be started
+
+Verify that the binary exists:
+
+```sh
+ls -l ~/bins/termuxcam
+```
+
+Verify that the run script points to the correct path:
+
+```sh
+cat ~/.termux/service/termuxcam/run
+```
+
+Verify that termux-services is loaded:
+
+```sh
+source $PREFIX/etc/profile.d/start-services.sh
+```
+
 ---
 
 ## Technical Notes
@@ -453,3 +471,4 @@ and ensure the Termux:API application has Camera permission.
 * Acquires a wake lock to reduce Android suspension
 * Logs activity to `~/camera_captures/capture.log`
 * Runs continuously under `termux-services`
+
