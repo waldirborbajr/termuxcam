@@ -1,6 +1,4 @@
-# README.md
 
-````markdown
 <p align="center">
   <img width="256" height="256" src="./assets/logo.png" />
 </p>
@@ -455,6 +453,3 @@ and ensure the Termux:API application has Camera permission.
 * Acquires a wake lock to reduce Android suspension
 * Logs activity to `~/camera_captures/capture.log`
 * Runs continuously under `termux-services`
-
-```
-```
