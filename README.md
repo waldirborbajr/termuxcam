@@ -1,34 +1,38 @@
+# README.md
+
+````markdown
 <p align="center">
   <img width="256" height="256" src="./assets/logo.png" />
 </p>
-<h1 align="center">TMS, A clean, fast, and modern tmux session manager written in Go</h1>
 
-# termuxcam
+<h1 align="center">termuxcam - Periodic Android Camera Capture for Termux</h1>
 
 Periodic front-camera capture on Android, running natively in Termux (no root required), with automatic upload to Telegram and cleanup of the local file once the upload is confirmed.
 
-Written in Go — a single compiled binary, no external runtime dependency (Python, Node, etc.), designed to run as a long-lived service via `termux-services`, surviving Termux restarts and Android's doze mode.
+Written in Go — a single compiled binary with no external runtime dependency (Python, Node.js, etc.), designed to run as a long-lived service via `termux-services`.
 
-**Flow:** capture via `termux-camera-photo` (Termux:API) → send the image to a Telegram bot/chat → delete the local file only after the upload is confirmed successful.
+**Flow:** capture via `termux-camera-photo` (Termux:API) → upload to Telegram → delete local image after successful upload.
 
 ---
 
 ## Prerequisites
 
-- An Android device with the **Termux** app installed (F-Droid build recommended — the Play Store version is discontinued)
-- The **Termux:API** app installed (F-Droid) — this is the bridge between Termux and Android hardware (camera, sensors, etc.)
-- A Telegram bot already created (see step 5)
+- Android device
+- Termux (F-Droid version recommended)
+- Termux:API application installed
+- Internet connection
+- Telegram account
 
 ---
 
 ## 1. Install Go
 
 ```sh
-pkg update
-pkg install golang
-```
+pkg update && pkg upgrade -y
+pkg install golang git
+````
 
-Verify the installation:
+Verify:
 
 ```sh
 go version
@@ -38,171 +42,419 @@ go version
 
 ## 2. Install Termux:API
 
-The `termux-camera-photo` binary used to access the camera only exists after installing the `termux-api` package **and** having the separate **Termux:API** app installed (they work together — the package is the CLI interface, the app is what holds the Android camera permission).
+Install the CLI package:
 
 ```sh
 pkg install termux-api
 ```
 
 Then:
-1. Install the **Termux:API** app from F-Droid (same store you installed Termux from)
-2. Open the app once
-3. Go to **Android Settings → Apps → Termux:API → Permissions** and grant **Camera** access
 
----
+1. Install the **Termux:API** Android application from F-Droid.
+2. Open the application once.
+3. Grant Camera permission.
 
-## 3. Confirm the front camera index
-
-Each device numbers its cameras differently. Run:
+Verify:
 
 ```sh
 termux-camera-info
 ```
 
-This returns a JSON listing available camera `id`s and which `facing` (`front`/`back`) each one is. Note the `id` for the front camera — you'll need this value (constant `cameraID` in `main.go`, default `"1"`).
+If you receive camera information in JSON format, the integration is working.
 
 ---
 
-## 4. Get the source code
+## 3. Determine the Front Camera ID
+
+List available cameras:
+
+```sh
+termux-camera-info
+```
+
+Example:
+
+```json
+[
+  {
+    "id": "0",
+    "facing": "back"
+  },
+  {
+    "id": "1",
+    "facing": "front"
+  }
+]
+```
+
+Note the camera ID associated with `"facing": "front"`.
+
+If your front camera is not `"1"`, update the `cameraID` constant in `main.go`.
+
+---
+
+## 4. Clone the Repository
 
 ```sh
 git clone https://github.com/waldirborbajr/termuxcam.git
 cd termuxcam
 ```
 
-If your device's front camera index isn't `1`, edit the `cameraID` constant in `main.go` before building.
+---
+
+## 5. Create a Telegram Bot
+
+1. Open Telegram.
+2. Start a conversation with **@BotFather**.
+3. Send:
+
+```text
+/newbot
+```
+
+4. Follow the instructions.
+5. Save the bot token.
+
+Example:
+
+```text
+123456789:ABCDEFxxxxxxxxxxxxxxxxxxxxxxxx
+```
 
 ---
 
-## 5. Create the Telegram bot and get your credentials
+## 6. Obtain Your Telegram Chat ID
 
-1. On Telegram, message **@BotFather**
-2. Send `/newbot` and follow the prompts → you'll receive a **token** (format `123456:ABC-...`)
-3. Send any message to your newly created bot (required, otherwise the next step returns nothing)
-4. In a browser, visit (replacing with your token):
-   ```
-   https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates
-   ```
-5. In the returned JSON, find `"chat":{"id": ...}` — that number is your `chat_id`
+Send any message to your bot first.
 
-Keep both values handy: `TG_BOT_TOKEN` and `TG_CHAT_ID`. You'll need them in steps 7 and 8.
+Open:
+
+```text
+https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates
+```
+
+Example:
+
+```text
+https://api.telegram.org/bot123456789:ABCDEFxxxxxxxxxxxxxxxxxxxxxxxx/getUpdates
+```
+
+You should see something similar to:
+
+```json
+{
+  "ok": true,
+  "result": [
+    {
+      "message": {
+        "chat": {
+          "id": 782816475
+        }
+      }
+    }
+  ]
+}
+```
+
+Your Chat ID is:
+
+```text
+782816475
+```
+
+Save both values:
+
+* `TG_BOT_TOKEN`
+* `TG_CHAT_ID`
 
 ---
 
-## 6. Build
+## 7. Build
 
-From inside the project folder:
+Inside the repository:
 
 ```sh
-go mod init termuxcam
 go build -o termuxcam main.go context.go
 ```
 
-> If the repository already ships with a `go.mod` file, skip `go mod init` — it already exists.
+Verify:
 
-This produces the `termuxcam` binary in the current folder.
+```sh
+ls -lh termuxcam
+```
 
 ---
 
-## 7. Test manually (optional, but recommended before turning it into a service)
+## 8. Test Manually
+
+Before configuring a service, verify everything works.
 
 ```sh
-export TG_BOT_TOKEN="123456:ABC-your-token"
-export TG_CHAT_ID="your_chat_id"
+export TG_BOT_TOKEN="YOUR_TOKEN"
+export TG_CHAT_ID="YOUR_CHAT_ID"
+
 ./termuxcam
 ```
 
-Check that a photo arrives in your Telegram chat. Press `Ctrl+C` to stop — the program releases its wake-lock automatically on exit.
+Confirm:
 
-If capture fails here, fix it before setting up the service (steps 8+); running as a service only hides errors in a log file, which makes initial troubleshooting harder.
+* A photo is captured.
+* The photo arrives in Telegram.
+* No errors are displayed.
+
+Stop with:
+
+```text
+Ctrl+C
+```
 
 ---
 
-## 8. Install as a persistent service (`termux-services`)
-
-This keeps the program running in the background, surviving Termux being closed and device restarts, using the `runit` supervisor.
-
-### 8.1 Install the service manager
+## 9. Install termux-services
 
 ```sh
 pkg install termux-services
 ```
 
-Close and reopen Termux after this step (it needs to restart the `init` process).
-
-### 8.2 Copy the binary to where the service expects it
+Load the service environment:
 
 ```sh
-cp termuxcam ~/termuxcam
+source $PREFIX/etc/profile.d/start-services.sh
 ```
 
-### 8.3 Create the service directory
+Verify:
 
 ```sh
-mkdir -p ~/.termux/service/termuxcam/log
+which sv
 ```
 
-### 8.4 Create the `run` script (what the supervisor executes)
+Expected:
 
-```sh
-cat <<'EOF' > ~/.termux/service/termuxcam/run
-#!/data/data/com.termux/files/usr/bin/sh
-export TG_BOT_TOKEN="123456:ABC-your-token"
-export TG_CHAT_ID="your_chat_id"
-exec /data/data/com.termux/files/home/termuxcam
-EOF
-chmod +x ~/.termux/service/termuxcam/run
-```
-
-> Replace the token and chat_id with the values obtained in step 5.
-
-### 8.5 Enable and start the service
-
-```sh
-sv-enable termuxcam
-sv up termuxcam
-```
-
-### 8.6 Check status and follow logs
-
-```sh
-sv status termuxcam
-tail -f ~/.termux/var/service/termuxcam/log/main/current
+```text
+/data/data/com.termux/files/usr/bin/sv
 ```
 
 ---
 
-## 9. (Optional) Disable battery optimization for Termux
+## 10. Install termuxcam as a Service
 
-To reduce the chance of Android suspending the background process:
+### 10.1 Copy the Binary
 
-**Android Settings → Apps → Termux → Battery → Unrestricted** (exact path varies by manufacturer).
+```sh
+cp termuxcam ~/termuxcam
+chmod +x ~/termuxcam
+```
 
-## 10. (Optional) Access photos outside Termux's sandbox
+Verify:
+
+```sh
+ls -l ~/termuxcam
+```
+
+---
+
+### 10.2 Create the Service Directory
+
+```sh
+mkdir -p ~/.termux/service/termuxcam
+mkdir -p ~/.termux/service/termuxcam/log
+```
+
+Verify:
+
+```sh
+ls -la ~/.termux/service/termuxcam
+```
+
+---
+
+### 10.3 Create the Run Script
+
+```sh
+cat <<'EOF' > ~/.termux/service/termuxcam/run
+#!/data/data/com.termux/files/usr/bin/sh
+
+export TG_BOT_TOKEN="YOUR_TOKEN"
+export TG_CHAT_ID="YOUR_CHAT_ID"
+
+exec /data/data/com.termux/files/home/termuxcam
+EOF
+```
+
+Make it executable:
+
+```sh
+chmod +x ~/.termux/service/termuxcam/run
+```
+
+Verify:
+
+```sh
+ls -l ~/.termux/service/termuxcam/run
+```
+
+Expected:
+
+```text
+-rwxr-xr-x
+```
+
+---
+
+### 10.4 Enable the Service
+
+```sh
+sv-enable termuxcam
+```
+
+---
+
+### 10.5 Start the Service
+
+```sh
+sv up termuxcam
+```
+
+Check status:
+
+```sh
+sv status termuxcam
+```
+
+Expected:
+
+```text
+run: termuxcam: (pid XXXX) ...
+```
+
+---
+
+### 10.6 View Logs
+
+```sh
+tail -f ~/.termux/var/service/termuxcam/log/main/current
+```
+
+If your Termux version stores logs elsewhere:
+
+```sh
+sv status termuxcam
+```
+
+and inspect the service directory.
+
+---
+
+## 11. Verify Automatic Startup
+
+Close Termux completely.
+
+Reopen it and run:
+
+```sh
+sv status termuxcam
+```
+
+The service should still be running.
+
+You can also reboot the device and verify again.
+
+---
+
+## 12. Disable Battery Optimization (Recommended)
+
+Many Android vendors aggressively terminate background processes.
+
+Set:
+
+**Settings → Apps → Termux → Battery → Unrestricted**
+
+Manufacturer-specific settings may also need adjustment.
+
+---
+
+## 13. Shared Storage Access (Optional)
+
+Allow access to Android shared storage:
 
 ```sh
 termux-setup-storage
 ```
 
-Grants access to Android's shared storage, letting you browse the `camera_captures` folder with a regular file manager — useful for inspecting images before they're sent/deleted automatically.
+This is useful if you want to inspect captured photos before they are automatically removed.
 
 ---
 
-## Useful maintenance commands
+## Service Management
 
-| Action | Command |
-|---|---|
-| Stop the service | `sv down termuxcam` |
-| Restart the service | `sv restart termuxcam` |
-| Disable the service | `sv-disable termuxcam` |
-| Follow logs in real time | `tail -f ~/.termux/var/service/termuxcam/log/main/current` |
+| Action         | Command                                                    |
+| -------------- | ---------------------------------------------------------- |
+| Start          | `sv up termuxcam`                                          |
+| Stop           | `sv down termuxcam`                                        |
+| Restart        | `sv restart termuxcam`                                     |
+| Status         | `sv status termuxcam`                                      |
+| Enable on boot | `sv-enable termuxcam`                                      |
+| Disable        | `sv-disable termuxcam`                                     |
+| View logs      | `tail -f ~/.termux/var/service/termuxcam/log/main/current` |
 
 ---
 
-## How it works (technical summary)
+## Troubleshooting
 
-- Every 5 minutes, the program calls `termux-camera-photo` to capture an image from the front camera
-- The image is sent via HTTP multipart to the Telegram API (`sendPhoto`)
-- On successful delivery, the local file is deleted; on failure, it's kept for a manual retry
-- A `termux-wake-lock` is acquired at startup and released on exit, preventing Android from suspending the process mid-cycle
-- All events are logged to `~/camera_captures/capture.log`
+### "No such file or directory" when creating `run`
+
+The service directory does not exist.
+
+Create it first:
+
+```sh
+mkdir -p ~/.termux/service/termuxcam
+```
+
+### "permission denied"
+
+Make the files executable:
+
+```sh
+chmod +x ~/termuxcam
+chmod +x ~/.termux/service/termuxcam/run
+```
+
+### No photos arrive in Telegram
+
+Verify:
+
+```sh
+curl https://api.telegram.org/bot$TG_BOT_TOKEN/getMe
+```
+
+Verify your Chat ID:
+
+```sh
+curl https://api.telegram.org/bot$TG_BOT_TOKEN/getUpdates
+```
+
+### Camera capture fails
+
+Verify:
+
+```sh
+termux-camera-info
+```
+
+and ensure the Termux:API application has Camera permission.
+
+---
+
+## Technical Notes
+
+* Captures an image every 5 minutes
+* Uses the front camera by default
+* Uploads via Telegram Bot API `sendPhoto`
+* Deletes images only after successful upload
+* Acquires a wake lock to reduce Android suspension
+* Logs activity to `~/camera_captures/capture.log`
+* Runs continuously under `termux-services`
+
+```
+```
