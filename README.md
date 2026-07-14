@@ -95,12 +95,12 @@ From inside the project folder:
 
 ```sh
 go mod init termuxcam
-go build -o termuxcapture main.go context.go
+go build -o termuxcam main.go context.go
 ```
 
 > If the repository already ships with a `go.mod` file, skip `go mod init` — it already exists.
 
-This produces the `termuxcapture` binary in the current folder.
+This produces the `termuxcam` binary in the current folder.
 
 ---
 
@@ -109,7 +109,7 @@ This produces the `termuxcapture` binary in the current folder.
 ```sh
 export TG_BOT_TOKEN="123456:ABC-your-token"
 export TG_CHAT_ID="your_chat_id"
-./termuxcapture
+./termuxcam
 ```
 
 Check that a photo arrives in your Telegram chat. Press `Ctrl+C` to stop — the program releases its wake-lock automatically on exit.
@@ -133,25 +133,25 @@ Close and reopen Termux after this step (it needs to restart the `init` process)
 ### 8.2 Copy the binary to where the service expects it
 
 ```sh
-cp termuxcapture ~/termuxcapture
+cp termuxcam ~/termuxcam
 ```
 
 ### 8.3 Create the service directory
 
 ```sh
-mkdir -p ~/.termux/service/termuxcapture/log
+mkdir -p ~/.termux/service/termuxcam/log
 ```
 
 ### 8.4 Create the `run` script (what the supervisor executes)
 
 ```sh
-cat <<'EOF' > ~/.termux/service/termuxcapture/run
+cat <<'EOF' > ~/.termux/service/termuxcam/run
 #!/data/data/com.termux/files/usr/bin/sh
 export TG_BOT_TOKEN="123456:ABC-your-token"
 export TG_CHAT_ID="your_chat_id"
-exec /data/data/com.termux/files/home/termuxcapture
+exec /data/data/com.termux/files/home/termuxcam
 EOF
-chmod +x ~/.termux/service/termuxcapture/run
+chmod +x ~/.termux/service/termuxcam/run
 ```
 
 > Replace the token and chat_id with the values obtained in step 5.
@@ -159,15 +159,15 @@ chmod +x ~/.termux/service/termuxcapture/run
 ### 8.5 Enable and start the service
 
 ```sh
-sv-enable termuxcapture
-sv up termuxcapture
+sv-enable termuxcam
+sv up termuxcam
 ```
 
 ### 8.6 Check status and follow logs
 
 ```sh
-sv status termuxcapture
-tail -f ~/.termux/var/service/termuxcapture/log/main/current
+sv status termuxcam
+tail -f ~/.termux/var/service/termuxcam/log/main/current
 ```
 
 ---
@@ -192,10 +192,10 @@ Grants access to Android's shared storage, letting you browse the `camera_captur
 
 | Action | Command |
 |---|---|
-| Stop the service | `sv down termuxcapture` |
-| Restart the service | `sv restart termuxcapture` |
-| Disable the service | `sv-disable termuxcapture` |
-| Follow logs in real time | `tail -f ~/.termux/var/service/termuxcapture/log/main/current` |
+| Stop the service | `sv down termuxcam` |
+| Restart the service | `sv restart termuxcam` |
+| Disable the service | `sv-disable termuxcam` |
+| Follow logs in real time | `tail -f ~/.termux/var/service/termuxcam/log/main/current` |
 
 ---
 
