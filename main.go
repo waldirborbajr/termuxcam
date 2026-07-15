@@ -440,6 +440,34 @@ func handleHelp() {
 	sendTextMessage(helpText)
 }
 
+// cameraModeLabel converts the raw config value into a human-readable label.
+func cameraModeLabel(mode int) string {
+	switch mode {
+	case 0:
+		return "back"
+	case 1:
+		return "front"
+	case 2:
+		return "both"
+	default:
+		return fmt.Sprintf("unknown(%d)", mode)
+	}
+}
+
+// escapeForStatus neutralizes Telegram legacy-Markdown special characters in
+// free-form text (log lines, error messages) so they can't break the
+// formatting — or worse, make the whole /status message fail to send.
+func escapeForStatus(s string) string {
+	replacer := strings.NewReplacer(
+		"`", "'",
+		"*", "•",
+		"_", "-",
+		"[", "(",
+		"]", ")",
+	)
+	return replacer.Replace(s)
+}
+
 func handleStatus() {
 	metricsMutex.RLock()
 	uptime := time.Since(startTime).Round(time.Second)
@@ -448,52 +476,87 @@ func handleStatus() {
 		lastCap = lastSuccessfulCapture.Format("2006-01-02 15:04:05")
 	}
 	nextCapture := time.Now().Add(interval).Format("15:04")
+	failedToday := failedUploadsToday
+	capToday := capturesToday
+	capTotal := totalCaptures
+	errText := lastError
 	metricsMutex.RUnlock()
 
-	status := fmt.Sprintf(`📊 *termuxcam v%s - Full Status*
+	if errText == "" {
+		errText = "(nenhum)"
+	}
+	lastLog := getLastLogLine()
 
-⏱ Uptime: %s
-📸 Capturas Hoje: %d | Total: %d
-📸 Última Captura: %s
-💾 Disco: %s
-📁 Pasta: %s
-🧠 Memória: %s
-🔥 CPU: %s
-🌡️ CPU Temp: %s
-🔋 Bateria: %s
-🌐 IP Local: %s
-🌍 IP Público: %s
-📡 WiFi: %s
-📱 Aparelho: %s
-📷 Câmera: %d | Motion: %v
-⏰ Intervalo: %s | Próxima: %s
-❤️ Heartbeat: %s
-❌ Falhas Hoje: %d
-⚠️ Último Erro: %s
-📜 Último Log: %s`,
+	const divider = "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬"
+
+	status := fmt.Sprintf(
+		"📊 *termuxcam* `v%s`\n"+
+			"%s\n\n"+
+
+			"*⏱ SISTEMA*\n"+
+			"Uptime: `%s`\n"+
+			"Capturas hoje: `%d`  ·  total: `%d`\n"+
+			"Última captura: `%s`\n"+
+			"Falhas hoje: `%d`\n\n"+
+
+			"*📷 CÂMERA*\n"+
+			"Modo: `%s`  ·  Motion: `%v`\n"+
+			"Intervalo: `%s`\n"+
+			"Próxima captura: `%s`\n"+
+			"Heartbeat: `%s`\n\n"+
+
+			"*💾 RECURSOS*\n"+
+			"Disco: `%s`\n"+
+			"Pasta: `%s`\n"+
+			"Memória: `%s`\n"+
+			"CPU: `%s`  ·  Temp: `%s`\n\n"+
+
+			"*🔋 DISPOSITIVO*\n"+
+			"Bateria: `%s`\n"+
+			"Aparelho: `%s`\n\n"+
+
+			"*🌐 REDE*\n"+
+			"IP local: `%s`\n"+
+			"IP público: `%s`\n"+
+			"WiFi: `%s`\n\n"+
+
+			"*⚠️ ÚLTIMO ERRO*\n"+
+			"`%s`\n\n"+
+
+			"*📜 ÚLTIMO LOG*\n"+
+			"`%s`",
 		Version,
+		divider,
+
 		uptime,
-		capturesToday, totalCaptures,
+		capToday, capTotal,
 		lastCap,
+		failedToday,
+
+		cameraModeLabel(cameraMode), motionEnabled,
+		interval,
+		nextCapture,
+		heartbeat,
+
 		getDiskUsage(),
 		getFolderUsage(),
 		getMemoryUsage(),
-		getCPUUsagePercent(),
-		getCPUTemperature(),
+		getCPUUsagePercent(), getCPUTemperature(),
+
 		getBatteryInfo(),
+		getDeviceInfo(),
+
 		getLocalIP(),
 		getPublicIP(),
 		getWifiStatus(),
-		getDeviceInfo(),
-		cameraMode, motionEnabled,
-		interval, nextCapture,
-		heartbeat,
-		failedUploadsToday,
-		lastError,
-		getLastLogLine())
+
+		escapeForStatus(errText),
+		escapeForStatus(lastLog),
+	)
 
 	sendTextMessage(status)
 }
+
 func handleRestart() {
 	sendTextMessage("🔄 Restarting termuxcam...")
 	logMsg("Restart requested via /restart command")
