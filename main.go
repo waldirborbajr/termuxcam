@@ -546,22 +546,6 @@ func startTelegramPolling(ctx context.Context) {
 	}
 }
 
-// Midnight Reset
-func startMidnightReset() {
-	ticker := time.NewTicker(1 * time.Minute)
-	for range ticker.C {
-		now := time.Now()
-		if now.Truncate(24*time.Hour).After(lastMidnight) {
-			metricsMutex.Lock()
-			capturesToday = 0
-			failedUploadsToday = 0
-			lastMidnight = now.Truncate(24 * time.Hour)
-			metricsMutex.Unlock()
-			logMsg("Daily counters reset at midnight")
-		}
-	}
-}
-
 // Capture
 func capturePhoto(ctx context.Context, hwID, label string) (string, error) {
 	ts := time.Now().Format("20060102_150405")
