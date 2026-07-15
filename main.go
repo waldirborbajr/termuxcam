@@ -6,7 +6,11 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	_ "image/jpeg"
 	"io"
+	"math/bits"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -21,6 +25,7 @@ import (
 
 const (
 	configFileName = "termuxcam.conf"
+	stateFileName  = "motion_state.json"
 	captureTimeout = 45 * time.Second
 	uploadTimeout  = 30 * time.Second
 
@@ -29,7 +34,17 @@ const (
 	minInterval = 1 * time.Minute
 	maxInterval = 24 * time.Hour
 
-	configFileMode = 0o600 // config may end up alongside logs; keep it user-only
+	// dHash grid: 9 columns x 8 rows yields 8 horizontal comparisons per row,
+	// 64 bits total — a standard, well-tested difference-hash size.
+	hashGridW = 9
+	hashGridH = 8
+	hashBits  = 64 // (hashGridW-1) * hashGridH
+
+	defaultMotionEnabled   = true
+	defaultMotionThreshold = 6 // bits out of 64 that must differ to count as "changed" (~9%)
+	defaultHeartbeat       = 0 // disabled by default
+
+	configFileMode = 0o600
 	dirMode        = 0o700
 	fileMode       = 0o600
 )
@@ -37,16 +52,10 @@ const (
 // --- Physical hardware camera IDs ------------------------------------------
 //
 // These are what `termux-camera-photo -c <id>` actually expects, and they are
-// a property of the DEVICE, not of this app's config. They are NOT guaranteed
-// to be 0=front/1=back — on this phone, `termux-camera-info` reported:
-//
-//   {"id": "0", "facing": "back"}
-//   {"id": "1", "facing": "front"}
-//
-// i.e. the opposite of the intuitive guess. If you ever run this on a
-// different device, re-run `termux-camera-info` and update these two
-// constants — everything else in the file only deals with the semantic
-// "front"/"back" labels below and never touches a raw ID directly.
+// a property of the DEVICE, not of this app's config. Confirm with
+// `termux-camera-info` and update if different on your phone. Nothing else
+// in this file ever touches a raw ID directly — everything downstream works
+// off the semantic "front"/"back" labels.
 const (
 	frontCameraHWID = "1"
 	backCameraHWID  = "0"
@@ -56,10 +65,16 @@ var (
 	exeDir      string
 	outputDir   string
 	logFilePath string
+	statePath   string
 	tgBotToken  = strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
 	tgChatID    = strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
+
 	interval    = 5 * time.Minute // fallback, used only if config is missing/invalid
 	cameraMode  = 1               // 0=back, 1=front, 2=both (config-facing semantic value)
+
+	motionEnabled   = defaultMotionEnabled
+	motionThreshold = defaultMotionThreshold
+	heartbeat       = defaultHeartbeat // 0 = disabled
 
 	httpClient = &http.Client{
 		Timeout: uploadTimeout,
@@ -70,17 +85,12 @@ var (
 )
 
 // camSpec pairs a human-readable label with the physical hardware ID needed
-// to actually address that camera. Everything downstream of camerasForMode
-// works off camSpec, so there is exactly one place (the constants above)
-// where a device's physical camera numbering can be wrong.
+// to actually address that camera.
 type camSpec struct {
-	label string // used in filenames, captions, and logs — always correct by construction
-	hwID  string // passed verbatim to `termux-camera-photo -c`
+	label string
+	hwID  string
 }
 
-// camerasForMode translates the config's semantic camera selection into the
-// concrete camera(s) to capture from, in a fixed, predictable order.
-// Config convention: 0=back, 1=front, 2=both.
 func camerasForMode(mode int) []camSpec {
 	switch mode {
 	case 0:
@@ -122,9 +132,8 @@ func logMsg(msg string) {
 	}
 }
 
-// stripInlineComment removes a trailing "# ..." comment from a config value.
-// Without this, "capture=3h  # or 2h, 30m" fails to parse as a duration and
-// silently falls back to the default interval.
+// --- Config -----------------------------------------------------------
+
 func stripInlineComment(s string) string {
 	if idx := strings.Index(s, "#"); idx != -1 {
 		s = s[:idx]
@@ -137,13 +146,32 @@ func loadConfig() {
 
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		defaultCfg := `# termuxcam configuration
-# capture=15m   (m = minutes, h = hours)
+
+# Capture interval — a number followed by 'm' (minutes) or 'h' (hours)
 capture=5m
 
-# camera=0  -> Back only
-# camera=1  -> Front only (default)
-# camera=2  -> Both cameras
+# Camera mode:
+#   0 = back only
+#   1 = front only (default)
+#   2 = both (captures and uploads one photo from each camera per cycle)
 camera=1
+
+# Motion detection: skip uploading (and delete) a capture that looks
+# essentially identical to the previous one from the same camera.
+# Compares a small perceptual hash of each frame; costs nothing beyond
+# a few milliseconds of CPU per capture, no network/API calls involved.
+motion=true
+
+# How different two frames must be to count as "changed", out of 64.
+# Lower = more sensitive (more uploads, more false positives from noise/
+# light flicker). Higher = less sensitive (may miss subtle changes).
+# 4-10 is a reasonable range for a static indoor camera.
+motion_threshold=6
+
+# Force an upload at least this often even with no detected motion, so
+# you have periodic confirmation the service is still alive. 0 disables
+# this (only motion-triggered uploads). Same duration format as capture.
+heartbeat=1h
 `
 		if err := os.WriteFile(configPath, []byte(defaultCfg), configFileMode); err != nil {
 			logMsg("ERROR: failed to create default config: " + err.Error())
@@ -154,7 +182,7 @@ camera=1
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		logMsg(fmt.Sprintf("ERROR: failed to read config (%v), using defaults: interval=%s cameraMode=%d", err, interval, cameraMode))
+		logMsg(fmt.Sprintf("ERROR: failed to read config (%v), using defaults", err))
 		return
 	}
 
@@ -165,7 +193,6 @@ camera=1
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-
 		line = stripInlineComment(line)
 		if line == "" {
 			continue
@@ -198,6 +225,31 @@ camera=1
 				continue
 			}
 			cameraMode = c
+		case "motion":
+			b, err := strconv.ParseBool(val)
+			if err != nil {
+				logMsg(fmt.Sprintf("WARN: invalid motion value %q, keeping %v", val, motionEnabled))
+				continue
+			}
+			motionEnabled = b
+		case "motion_threshold":
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 || n > hashBits {
+				logMsg(fmt.Sprintf("WARN: invalid motion_threshold value %q, keeping %d", val, motionThreshold))
+				continue
+			}
+			motionThreshold = n
+		case "heartbeat":
+			if val == "0" {
+				heartbeat = 0
+				continue
+			}
+			d, err := parseDuration(val)
+			if err != nil {
+				logMsg(fmt.Sprintf("WARN: invalid heartbeat value %q (%v), keeping %s", val, err, heartbeat))
+				continue
+			}
+			heartbeat = d
 		default:
 			logMsg(fmt.Sprintf("WARN: unknown config key %q, ignoring", key))
 		}
@@ -207,8 +259,10 @@ camera=1
 	for _, c := range camerasForMode(cameraMode) {
 		labels = append(labels, fmt.Sprintf("%s(hw=%s)", c.label, c.hwID))
 	}
-	logMsg(fmt.Sprintf("Config loaded -> interval=%s | cameraMode=%d -> %s | config=%s",
-		interval, cameraMode, strings.Join(labels, ", "), configPath))
+	logMsg(fmt.Sprintf(
+		"Config loaded -> interval=%s | cameraMode=%d -> %s | motion=%v threshold=%d/%d | heartbeat=%s | config=%s",
+		interval, cameraMode, strings.Join(labels, ", "), motionEnabled, motionThreshold, hashBits, heartbeat, configPath,
+	))
 }
 
 func parseDuration(s string) (time.Duration, error) {
@@ -231,6 +285,95 @@ func parseDuration(s string) (time.Duration, error) {
 	}
 }
 
+// --- Motion detection state (persisted across restarts) -------------------
+
+type camState struct {
+	Hash     uint64    `json:"hash"`
+	LastSent time.Time `json:"last_sent"`
+}
+
+type motionState struct {
+	Cameras map[string]camState `json:"cameras"`
+}
+
+func loadState() motionState {
+	st := motionState{Cameras: make(map[string]camState)}
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return st // no prior state (first run, or file missing) — that's fine
+	}
+	if err := json.Unmarshal(data, &st); err != nil {
+		logMsg(fmt.Sprintf("WARN: could not parse motion state (%v), starting fresh", err))
+		return motionState{Cameras: make(map[string]camState)}
+	}
+	if st.Cameras == nil {
+		st.Cameras = make(map[string]camState)
+	}
+	return st
+}
+
+func saveState(st motionState) {
+	data, err := json.Marshal(st)
+	if err != nil {
+		logMsg("WARN: could not marshal motion state: " + err.Error())
+		return
+	}
+	if err := os.WriteFile(statePath, data, fileMode); err != nil {
+		logMsg("WARN: could not write motion state: " + err.Error())
+	}
+}
+
+// computeDHash produces a 64-bit difference hash of the image at path.
+// It downsamples to a hashGridW x hashGridH grayscale grid using nearest-
+// neighbor sampling (no external imaging libraries needed) and encodes
+// whether each pixel is brighter than its right neighbor.
+func computeDHash(path string) (uint64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return 0, err
+	}
+
+	bounds := img.Bounds()
+	w, h := bounds.Dx(), bounds.Dy()
+	if w == 0 || h == 0 {
+		return 0, fmt.Errorf("zero-sized image")
+	}
+
+	var grid [hashGridH][hashGridW]uint32
+	for gy := 0; gy < hashGridH; gy++ {
+		srcY := bounds.Min.Y + gy*h/hashGridH
+		for gx := 0; gx < hashGridW; gx++ {
+			srcX := bounds.Min.X + gx*w/hashGridW
+			gray := color.GrayModel.Convert(img.At(srcX, srcY)).(color.Gray)
+			grid[gy][gx] = uint32(gray.Y)
+		}
+	}
+
+	var hash uint64
+	bit := 0
+	for gy := 0; gy < hashGridH; gy++ {
+		for gx := 0; gx < hashGridW-1; gx++ {
+			if grid[gy][gx] > grid[gy][gx+1] {
+				hash |= 1 << uint(bit)
+			}
+			bit++
+		}
+	}
+	return hash, nil
+}
+
+func hammingDistance(a, b uint64) int {
+	return bits.OnesCount64(a ^ b)
+}
+
+// --- Wake lock --------------------------------------------------------
+
 func acquireWakeLock() {
 	if _, err := exec.LookPath("termux-wake-lock"); err != nil {
 		logMsg("WARN: termux-wake-lock not found, skipping (device may sleep)")
@@ -247,9 +390,8 @@ func releaseWakeLock() {
 	}
 }
 
-// capturePhoto takes a photo with the given physical hardware camera ID.
-// label is used only for the output filename — it must already be the
-// correct semantic label (from camSpec), not derived from hwID here.
+// --- Capture ------------------------------------------------------------
+
 func capturePhoto(ctx context.Context, hwID, label string) (string, error) {
 	if _, err := exec.LookPath("termux-camera-photo"); err != nil {
 		return "", fmt.Errorf("termux-camera-photo not found: %w", err)
@@ -281,8 +423,9 @@ func capturePhoto(ctx context.Context, hwID, label string) (string, error) {
 	return outfile, nil
 }
 
+// --- Telegram -------------------------------------------------------------
+
 func sendToTelegram(ctx context.Context, photoPath, caption string) bool {
-	// Defense in depth: never let a crafted photoPath escape outputDir.
 	absOut, err := filepath.Abs(outputDir)
 	if err != nil {
 		logMsg("ERROR: cannot resolve output dir: " + err.Error())
@@ -360,8 +503,14 @@ func sendToTelegram(ctx context.Context, photoPath, caption string) bool {
 	return r.Ok
 }
 
-func runOnce(ctx context.Context) {
-	now := time.Now().Format("2006-01-02 15:04:05")
+// --- Orchestration ----------------------------------------------------
+
+func runOnce(ctx context.Context, state motionState) motionState {
+	now := time.Now()
+
+	loc, _ := time.LoadLocation("America/Sao_Paulo")
+	nowStr := now.In(loc).Format("2006-01-02 15:04:05")
+	// nowStr := now.Format("2006-01-02 15:04:05")
 
 	for _, cam := range camerasForMode(cameraMode) {
 		photo, err := capturePhoto(ctx, cam.hwID, cam.label)
@@ -369,7 +518,49 @@ func runOnce(ctx context.Context) {
 			continue // one camera failing shouldn't block the other in "both" mode
 		}
 
-		caption := fmt.Sprintf("%s camera: %s", strings.Title(cam.label), now)
+		shouldSend := true
+		reason := ""
+		var newHash uint64
+		prev, hadPrev := state.Cameras[cam.label]
+
+		if motionEnabled {
+			h, herr := computeDHash(photo)
+			if herr != nil {
+				logMsg(fmt.Sprintf("WARN: could not hash %s (%v), sending anyway", photo, herr))
+			} else {
+				newHash = h
+				if hadPrev {
+					dist := hammingDistance(h, prev.Hash)
+					heartbeatDue := heartbeat > 0 && !prev.LastSent.IsZero() && now.Sub(prev.LastSent) >= heartbeat
+					if dist < motionThreshold && !heartbeatDue {
+						shouldSend = false
+						reason = fmt.Sprintf("no significant change (distance=%d/%d, threshold=%d)", dist, hashBits, motionThreshold)
+					} else if heartbeatDue {
+						reason = fmt.Sprintf("heartbeat due (distance=%d/%d)", dist, hashBits)
+					} else {
+						reason = fmt.Sprintf("motion detected (distance=%d/%d)", dist, hashBits)
+					}
+				} else {
+					reason = "first capture for this camera, no baseline yet"
+				}
+				// Always track the latest hash for the next comparison,
+				// regardless of whether this frame was sent — otherwise a
+				// slow scene drift would never register as "changed".
+				state.Cameras[cam.label] = camState{Hash: newHash, LastSent: prev.LastSent}
+			}
+		}
+
+		if !shouldSend {
+			logMsg(fmt.Sprintf("Skipped upload (%s): %s", cam.label, reason))
+			os.Remove(photo)
+			continue
+		}
+
+		if reason != "" {
+			logMsg(fmt.Sprintf("Sending (%s): %s", cam.label, reason))
+		}
+
+		caption := fmt.Sprintf("%s camera: %s", strings.Title(cam.label), nowStr)
 
 		if sendToTelegram(ctx, photo, caption) {
 			if err := os.Remove(photo); err != nil {
@@ -377,10 +568,17 @@ func runOnce(ctx context.Context) {
 			} else {
 				logMsg("File sent and deleted")
 			}
+			if motionEnabled {
+				cs := state.Cameras[cam.label]
+				cs.LastSent = now
+				state.Cameras[cam.label] = cs
+			}
 		} else {
 			logMsg("Upload failed - keeping local file")
 		}
 	}
+
+	return state
 }
 
 func main() {
@@ -389,9 +587,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// === FORÇAR TIMEZONE CORRETO ===
+    if err := os.Setenv("TZ", "America/Sao_Paulo"); err != nil {
+        logMsg("WARN: could not set TZ environment variable")
+    }
+
+    // Recarrega a localização (importante para Go)
+    time.Local = time.FixedZone("America/Sao_Paulo", -3*60*60) // UTC-3 (horário de Brasília)
+	
 	exeDir = getExeDir()
 	outputDir = filepath.Join(exeDir, "camera_captures")
 	logFilePath = filepath.Join(outputDir, "capture.log")
+	statePath = filepath.Join(outputDir, stateFileName)
 
 	if err := os.MkdirAll(outputDir, dirMode); err != nil {
 		fmt.Println("FATAL: cannot create output dir:", err)
@@ -399,6 +606,7 @@ func main() {
 	}
 
 	loadConfig()
+	state := loadState()
 
 	acquireWakeLock()
 	defer releaseWakeLock()
@@ -411,12 +619,14 @@ func main() {
 
 	logMsg(fmt.Sprintf("termuxcam started | Binary dir: %s | Interval: %s", exeDir, interval))
 
-	runOnce(ctx) // immediate first capture
+	state = runOnce(ctx, state) // immediate first capture
+	saveState(state)
 
 	for {
 		select {
 		case <-ticker.C:
-			runOnce(ctx)
+			state = runOnce(ctx, state)
+			saveState(state)
 		case <-ctx.Done():
 			logMsg("Shutting down on signal")
 			return
