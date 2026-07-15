@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	Version        = "0.1.0"
+	Version        = "0.1.1"
 	configFileName = "termuxcam.conf"
 	stateFileName  = "motion_state.json"
 	captureTimeout = 45 * time.Second
@@ -74,6 +74,7 @@ var (
 		},
 	}
 
+	// Metrics
 	startTime             = time.Now()
 	lastSuccessfulCapture time.Time
 	capturesToday         int
@@ -81,6 +82,7 @@ var (
 	failedUploadsToday    int
 	lastError             string
 	metricsMutex          sync.RWMutex
+	lastMidnight          = time.Now().Truncate(24 * time.Hour)
 )
 
 type camSpec struct {
@@ -129,6 +131,18 @@ func getLastLogLine() string {
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	return lines[len(lines)-1]
+}
+
+func getLastLogs(n int) string {
+	data, err := os.ReadFile(logFilePath)
+	if err != nil || len(data) == 0 {
+		return "No logs yet"
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // System Information
@@ -328,7 +342,7 @@ func parseDuration(s string) (time.Duration, error) {
 		n, _ := strconv.Atoi(strings.TrimSuffix(s, "m"))
 		return time.Duration(n) * time.Minute, nil
 	}
-	return 0, fmt.Errorf("invalid")
+	return 0, fmt.Errorf("invalid duration")
 }
 
 // Motion State
@@ -415,7 +429,7 @@ func releaseWakeLock() {
 	exec.Command("termux-wake-unlock").Run()
 }
 
-// Telegram Status
+// Telegram Commands
 func handleStatus() {
 	metricsMutex.RLock()
 	uptime := time.Since(startTime).Round(time.Second)
@@ -441,7 +455,7 @@ func handleStatus() {
 		"📡 *WiFi:* `%s`\n"+
 		"📱 *Device:* `%s`\n"+
 		"📷 *Camera Mode:* `%d` | Motion: `%v`\n"+
-		"⏰ *Interval:* `%s` | Next Capture: `%s`\n"+
+		"⏰ *Interval:* `%s` | Next: `%s`\n"+
 		"❤️ *Heartbeat:* `%s`\n"+
 		"❌ *Failed Uploads Today:* `%d`\n"+
 		"⚠️ *Last Error:* `%s`\n"+
@@ -456,6 +470,18 @@ func handleStatus() {
 	sendTextMessage(status)
 }
 
+func handleRestart() {
+	sendTextMessage("🔄 Restarting termuxcam...")
+	logMsg("Restart requested via /restart command")
+	time.Sleep(1 * time.Second)
+	os.Exit(0) // Will be restarted by user or service
+}
+
+func handleLog() {
+	logs := getLastLogs(15)
+	sendTextMessage("📜 *Last 15 Log Lines:*\n\n" + logs)
+}
+
 func sendTextMessage(text string) {
 	url := "https://api.telegram.org/bot" + tgBotToken + "/sendMessage"
 	data := map[string]string{"chat_id": tgChatID, "text": text, "parse_mode": "Markdown"}
@@ -464,7 +490,7 @@ func sendTextMessage(text string) {
 }
 
 func startTelegramPolling(ctx context.Context) {
-	logMsg("Telegram polling started - /status command active")
+	logMsg("Telegram polling started - commands: /status, /restart, /log")
 	offset := 0
 	for {
 		select {
@@ -493,10 +519,33 @@ func startTelegramPolling(ctx context.Context) {
 
 			for _, u := range result.Result {
 				offset = u.UpdateID + 1
-				if strings.TrimSpace(u.Message.Text) == "/status" {
+				text := strings.TrimSpace(u.Message.Text)
+
+				switch text {
+				case "/status":
 					handleStatus()
+				case "/restart":
+					handleRestart()
+				case "/log":
+					handleLog()
 				}
 			}
+		}
+	}
+}
+
+// Reset counters at midnight
+func startMidnightReset() {
+	ticker := time.NewTicker(1 * time.Minute)
+	for range ticker.C {
+		now := time.Now()
+		if now.Truncate(24*time.Hour).After(lastMidnight) {
+			metricsMutex.Lock()
+			capturesToday = 0
+			failedUploadsToday = 0
+			lastMidnight = now.Truncate(24 * time.Hour)
+			metricsMutex.Unlock()
+			logMsg("Daily counters reset at midnight")
 		}
 	}
 }
@@ -519,7 +568,8 @@ func capturePhoto(ctx context.Context, hwID, label string) (string, error) {
 		return "", err
 	}
 
-	if info, err := os.Stat(outfile); err != nil || info.Size() == 0 {
+	info, err := os.Stat(outfile)
+	if err != nil || info.Size() == 0 {
 		os.Remove(outfile)
 		return "", fmt.Errorf("empty capture")
 	}
@@ -529,6 +579,7 @@ func capturePhoto(ctx context.Context, hwID, label string) (string, error) {
 	capturesToday++
 	metricsMutex.Unlock()
 
+	logMsg(fmt.Sprintf("Captured successfully: %s", outfile))
 	return outfile, nil
 }
 
@@ -569,6 +620,12 @@ func sendToTelegram(ctx context.Context, photoPath, caption string) bool {
 
 	var r struct{ Ok bool `json:"ok"` }
 	json.NewDecoder(resp.Body).Decode(&r)
+
+	if !r.Ok {
+		metricsMutex.Lock()
+		failedUploadsToday++
+		metricsMutex.Unlock()
+	}
 	return r.Ok
 }
 
@@ -645,11 +702,12 @@ func main() {
 	defer stop()
 
 	go startTelegramPolling(ctx)
+	go startMidnightReset()
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	logMsg(fmt.Sprintf("termuxcam v%s started | Interval: %s", Version, interval))
+	logMsg(fmt.Sprintf("termuxcam v%s started successfully", Version))
 
 	state = runOnce(ctx, state)
 	saveState(state)
@@ -662,6 +720,22 @@ func main() {
 		case <-ctx.Done():
 			logMsg("Shutting down on signal")
 			return
+		}
+	}
+}
+
+// Midnight reset
+func startMidnightReset() {
+	ticker := time.NewTicker(1 * time.Minute)
+	for range ticker.C {
+		now := time.Now()
+		if now.Truncate(24*time.Hour).After(lastMidnight) {
+			metricsMutex.Lock()
+			capturesToday = 0
+			failedUploadsToday = 0
+			lastMidnight = now.Truncate(24 * time.Hour)
+			metricsMutex.Unlock()
+			logMsg("Daily counters reset at midnight")
 		}
 	}
 }
