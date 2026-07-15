@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,16 +23,32 @@ const (
 	configFileName = "termuxcam.conf"
 	captureTimeout = 45 * time.Second
 	uploadTimeout  = 30 * time.Second
+
+	// Guardrails: prevent a malformed/edited config from producing a
+	// zero/negative ticker interval (which panics) or a hammering loop.
+	minInterval = 1 * time.Minute
+	maxInterval = 24 * time.Hour
+
+	configFileMode = 0o600 // config may end up alongside logs; keep it user-only
+	dirMode        = 0o700
+	fileMode       = 0o600
 )
 
 var (
-	exeDir       string
-	outputDir    string
-	logFilePath  string
-	tgBotToken   = os.Getenv("TG_BOT_TOKEN")
-	tgChatID     = os.Getenv("TG_CHAT_ID")
-	interval     = 5 * time.Minute // fallback
-	cameraMode   = 1               // 0=front, 1=back, 2=both
+	exeDir      string
+	outputDir   string
+	logFilePath string
+	tgBotToken  = strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
+	tgChatID    = strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
+	interval    = 5 * time.Minute // fallback, used only if config is missing/invalid
+	cameraMode  = 1               // 0=front, 1=back, 2=both
+
+	httpClient = &http.Client{
+		Timeout: uploadTimeout,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+		},
+	}
 )
 
 func getExeDir() string {
@@ -47,12 +64,30 @@ func logMsg(msg string) {
 	line := fmt.Sprintf("[%s] %s", ts, msg)
 	fmt.Println(line)
 
-	os.MkdirAll(outputDir, 0755)
-	f, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err == nil {
-		defer f.Close()
-		f.WriteString(line + "\n")
+	if err := os.MkdirAll(outputDir, dirMode); err != nil {
+		fmt.Printf("[%s] WARN: could not create output dir: %v\n", ts, err)
+		return
 	}
+	f, err := os.OpenFile(logFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, fileMode)
+	if err != nil {
+		fmt.Printf("[%s] WARN: could not open log file: %v\n", ts, err)
+		return
+	}
+	defer f.Close()
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		fmt.Printf("[%s] WARN: could not write log file: %v\n", ts, err)
+	}
+}
+
+// stripInlineComment removes a trailing "# ..." comment from a config value.
+// Without this, "capture=3h  # or 2h, 30m" fails to parse as a duration and
+// silently falls back to the default interval — this was the root cause of
+// captures firing every 5 minutes instead of every 3 hours.
+func stripInlineComment(s string) string {
+	if idx := strings.Index(s, "#"); idx != -1 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
 }
 
 func loadConfig() {
@@ -63,25 +98,40 @@ func loadConfig() {
 # capture=15m   (m = minutes, h = hours)
 capture=5m
 
-# camera=0  → Front only
-# camera=1  → Back only (default)
-# camera=2  → Both cameras
+# camera=0  -> Front only
+# camera=1  -> Back only (default)
+# camera=2  -> Both cameras
 camera=1
 `
-		os.WriteFile(configPath, []byte(defaultCfg), 0644)
-		logMsg("Created default config: " + configPath)
+		if err := os.WriteFile(configPath, []byte(defaultCfg), configFileMode); err != nil {
+			logMsg("ERROR: failed to create default config: " + err.Error())
+		} else {
+			logMsg("Created default config: " + configPath)
+		}
 	}
 
-	data, _ := os.ReadFile(configPath)
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		logMsg(fmt.Sprintf("ERROR: failed to read config (%v), using defaults: interval=%s cameraMode=%d", err, interval, cameraMode))
+		return
+	}
+
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+
+		line = stripInlineComment(line)
+		if line == "" {
+			continue
+		}
+
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
+			logMsg(fmt.Sprintf("WARN: ignoring malformed config line: %q", raw))
 			continue
 		}
 		key := strings.TrimSpace(parts[0])
@@ -89,47 +139,79 @@ camera=1
 
 		switch key {
 		case "capture":
-			if d, err := parseDuration(val); err == nil {
-				interval = d
+			d, err := parseDuration(val)
+			if err != nil {
+				logMsg(fmt.Sprintf("WARN: invalid capture value %q (%v), keeping %s", val, err, interval))
+				continue
 			}
+			if d < minInterval || d > maxInterval {
+				logMsg(fmt.Sprintf("WARN: capture value %s out of allowed range [%s, %s], keeping %s", d, minInterval, maxInterval, interval))
+				continue
+			}
+			interval = d
 		case "camera":
-			if c, err := strconv.Atoi(val); err == nil && c >= 0 && c <= 2 {
-				cameraMode = c
+			c, err := strconv.Atoi(val)
+			if err != nil || c < 0 || c > 2 {
+				logMsg(fmt.Sprintf("WARN: invalid camera value %q, keeping %d", val, cameraMode))
+				continue
 			}
+			cameraMode = c
+		default:
+			logMsg(fmt.Sprintf("WARN: unknown config key %q, ignoring", key))
 		}
 	}
 
-	logMsg(fmt.Sprintf("Config loaded → interval=%s | cameraMode=%d | config=%s", interval, cameraMode, configPath))
+	logMsg(fmt.Sprintf("Config loaded -> interval=%s | cameraMode=%d | config=%s", interval, cameraMode, configPath))
 }
 
 func parseDuration(s string) (time.Duration, error) {
 	s = strings.ToLower(strings.TrimSpace(s))
-	if strings.HasSuffix(s, "h") {
-		n, _ := strconv.Atoi(strings.TrimSuffix(s, "h"))
+	switch {
+	case strings.HasSuffix(s, "h"):
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "h"))
+		if err != nil || n <= 0 {
+			return 0, fmt.Errorf("invalid hour value %q", s)
+		}
 		return time.Duration(n) * time.Hour, nil
-	} else if strings.HasSuffix(s, "m") {
-		n, _ := strconv.Atoi(strings.TrimSuffix(s, "m"))
+	case strings.HasSuffix(s, "m"):
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "m"))
+		if err != nil || n <= 0 {
+			return 0, fmt.Errorf("invalid minute value %q", s)
+		}
 		return time.Duration(n) * time.Minute, nil
+	default:
+		return 0, fmt.Errorf("duration %q missing 'h' or 'm' suffix", s)
 	}
-	return 0, fmt.Errorf("invalid duration")
 }
 
 func acquireWakeLock() {
-	exec.Command("termux-wake-lock").Run()
+	if _, err := exec.LookPath("termux-wake-lock"); err != nil {
+		logMsg("WARN: termux-wake-lock not found, skipping (device may sleep)")
+		return
+	}
+	if err := exec.Command("termux-wake-lock").Run(); err != nil {
+		logMsg("WARN: termux-wake-lock failed: " + err.Error())
+	}
 }
 
 func releaseWakeLock() {
-	exec.Command("termux-wake-unlock").Run()
+	if err := exec.Command("termux-wake-unlock").Run(); err != nil {
+		logMsg("WARN: termux-wake-unlock failed: " + err.Error())
+	}
 }
 
-func capturePhoto(cameraID string) (string, error) {
+func capturePhoto(ctx context.Context, cameraID string) (string, error) {
+	if _, err := exec.LookPath("termux-camera-photo"); err != nil {
+		return "", fmt.Errorf("termux-camera-photo not found: %w", err)
+	}
+
 	ts := time.Now().Format("20060102_150405")
 	outfile := filepath.Join(outputDir, fmt.Sprintf("capture_%s_cam%s.jpg", ts, cameraID))
 
-	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
+	cctx, cancel := context.WithTimeout(ctx, captureTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "termux-camera-photo", "-c", cameraID, outfile)
+	cmd := exec.CommandContext(cctx, "termux-camera-photo", "-c", cameraID, outfile)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
@@ -139,51 +221,102 @@ func capturePhoto(cameraID string) (string, error) {
 		return "", err
 	}
 
-	if info, err := os.Stat(outfile); err != nil || info.Size() == 0 {
+	info, err := os.Stat(outfile)
+	if err != nil || info.Size() == 0 {
 		os.Remove(outfile)
-		return "", fmt.Errorf("empty file")
+		return "", fmt.Errorf("empty or missing capture file")
 	}
 
 	logMsg(fmt.Sprintf("Captured successfully: %s", outfile))
 	return outfile, nil
 }
 
-func sendToTelegram(photoPath, caption string) bool {
+func sendToTelegram(ctx context.Context, photoPath, caption string) bool {
+	// Defense in depth: never let a crafted photoPath escape outputDir.
+	absOut, err := filepath.Abs(outputDir)
+	if err != nil {
+		logMsg("ERROR: cannot resolve output dir: " + err.Error())
+		return false
+	}
+	absPhoto, err := filepath.Abs(photoPath)
+	if err != nil || !strings.HasPrefix(absPhoto, absOut+string(os.PathSeparator)) {
+		logMsg("ERROR: refusing to upload file outside output dir: " + photoPath)
+		return false
+	}
+
 	file, err := os.Open(photoPath)
 	if err != nil {
+		logMsg("ERROR: cannot open photo for upload: " + err.Error())
 		return false
 	}
 	defer file.Close()
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	writer.WriteField("chat_id", tgChatID)
-	writer.WriteField("caption", caption)
 
-	part, _ := writer.CreateFormFile("photo", filepath.Base(photoPath))
-	io.Copy(part, file)
-	writer.Close()
+	if err := writer.WriteField("chat_id", tgChatID); err != nil {
+		logMsg("ERROR: writing chat_id field: " + err.Error())
+		return false
+	}
+	if err := writer.WriteField("caption", caption); err != nil {
+		logMsg("ERROR: writing caption field: " + err.Error())
+		return false
+	}
+	part, err := writer.CreateFormFile("photo", filepath.Base(photoPath))
+	if err != nil {
+		logMsg("ERROR: creating form file: " + err.Error())
+		return false
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		logMsg("ERROR: copying photo into request: " + err.Error())
+		return false
+	}
+	if err := writer.Close(); err != nil {
+		logMsg("ERROR: closing multipart writer: " + err.Error())
+		return false
+	}
 
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", tgBotToken)
-	req, _ := http.NewRequest("POST", url, body)
+	url := "https://api.telegram.org/bot" + tgBotToken + "/sendPhoto"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		logMsg("ERROR: building request: " + err.Error())
+		return false
+	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: uploadTimeout}
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
+		// Note: never log `err` verbatim if it could ever embed the URL with
+		// the token; net/http errors don't include the body, so this is safe,
+		// but we still avoid logging headers/URLs elsewhere.
+		logMsg("ERROR: telegram request failed: " + err.Error())
 		return false
 	}
 	defer resp.Body.Close()
 
-	var r struct{ Ok bool }
-	json.NewDecoder(resp.Body).Decode(&r)
+	if resp.StatusCode != http.StatusOK {
+		logMsg(fmt.Sprintf("ERROR: telegram returned HTTP %d", resp.StatusCode))
+		return false
+	}
+
+	var r struct {
+		Ok          bool   `json:"ok"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		logMsg("ERROR: decoding telegram response: " + err.Error())
+		return false
+	}
+	if !r.Ok {
+		logMsg("ERROR: telegram rejected upload: " + r.Description)
+	}
 	return r.Ok
 }
 
-func runOnce() {
+func runOnce(ctx context.Context) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 
-	cams := []string{}
+	var cams []string
 	if cameraMode == 0 || cameraMode == 2 {
 		cams = append(cams, "0")
 	}
@@ -191,19 +324,22 @@ func runOnce() {
 		cams = append(cams, "1")
 	}
 
-	for _, id := range cams {
-		name := map[string]string{"0": "Front Camera", "1": "Back Camera"}[id]
+	names := map[string]string{"0": "Front Camera", "1": "Back Camera"}
 
-		photo, err := capturePhoto(id)
+	for _, id := range cams {
+		photo, err := capturePhoto(ctx, id)
 		if err != nil {
 			continue
 		}
 
-		caption := fmt.Sprintf("%s: %s", name, now)
+		caption := fmt.Sprintf("%s: %s", names[id], now)
 
-		if sendToTelegram(photo, caption) {
-			os.Remove(photo)
-			logMsg("File sent and deleted")
+		if sendToTelegram(ctx, photo, caption) {
+			if err := os.Remove(photo); err != nil {
+				logMsg("WARN: failed to delete local file after upload: " + err.Error())
+			} else {
+				logMsg("File sent and deleted")
+			}
 		} else {
 			logMsg("Upload failed - keeping local file")
 		}
@@ -212,7 +348,7 @@ func runOnce() {
 
 func main() {
 	if tgBotToken == "" || tgChatID == "" {
-		fmt.Println("❌ TG_BOT_TOKEN or TG_CHAT_ID not set")
+		fmt.Println("TG_BOT_TOKEN or TG_CHAT_ID not set")
 		os.Exit(1)
 	}
 
@@ -220,27 +356,32 @@ func main() {
 	outputDir = filepath.Join(exeDir, "camera_captures")
 	logFilePath = filepath.Join(outputDir, "capture.log")
 
+	if err := os.MkdirAll(outputDir, dirMode); err != nil {
+		fmt.Println("FATAL: cannot create output dir:", err)
+		os.Exit(1)
+	}
+
 	loadConfig()
 
 	acquireWakeLock()
 	defer releaseWakeLock()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	logMsg(fmt.Sprintf("termuxcam started | Binary dir: %s | Interval: %s", exeDir, interval))
 
-	runOnce() // primeira captura imediata
+	runOnce(ctx) // immediate first capture
 
 	for {
 		select {
 		case <-ticker.C:
-			runOnce()
-		case sig := <-sigCh:
-			logMsg(fmt.Sprintf("Shutting down on signal: %v", sig))
+			runOnce(ctx)
+		case <-ctx.Done():
+			logMsg("Shutting down on signal")
 			return
 		}
 	}
