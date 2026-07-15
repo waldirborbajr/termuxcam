@@ -1,39 +1,71 @@
-# Melhorias no termuxcam
+# 📋 TODO List - termuxcam
 
-## Detecção de mudança / movimento (reduz ruído e custo)
+**Versão atual:** 0.1.1  
+**Objetivo:** Sistema de câmera resiliente, eficiente e monitorável via Telegram no Termux.
 
-Comparar a foto atual com a anterior (diff de hash perceptual ou simples diferença de bytes) e só enviar pro Telegram quando houver mudança significativa. Isso resolve o problema de "288 fotos por dia" que discutimos — a maioria idêntica ao ambiente parado.
-Retry com backoff em vez de só "keep local file"
-Hoje, se o upload falhar, o arquivo fica local até o próximo ciclo tentar de novo do zero (ciclo novo, foto nova). Um retry queue simples — tentar reenviar arquivos antigos não enviados antes de capturar um novo — evitaria perder momentos específicos por falha de rede momentânea.
+---
 
-## Rotação/limite de espaço em disco
+## ✅ Concluído
 
-Se o upload falhar repetidamente (Wi-Fi caiu por horas), camera_captures/ pode crescer indefinidamente. Um limite de tamanho total ou idade máxima do arquivo evita encher o armazenamento do celular.
+- [x] Captura periódica com `termux-camera-photo`
+- [x] Envio via Telegram (`sendPhoto`)
+- [x] Detecção de movimento via perceptual hash (dHash)
+- [x] Heartbeat (envio periódico mesmo sem movimento)
+- [x] Configurável via `termuxcam.conf`
+- [x] Persistência de estado (`motion_state.json`)
+- [x] Wake-lock para não dormir
+- [x] Comando `/status` rico com métricas do sistema
+- [x] Comandos `/help`, `/log`, `/restart`
+- [x] Reset automático de contadores diários à meia-noite
 
-## Métricas/heartbeat
+---
 
-Um comando /status no bot do Telegram que responde com uptime, última captura bem-sucedida, e espaço em disco — útil pra você verificar remotamente se está tudo funcionando sem precisar abrir o Termux fisicamente.
+## 🔄 Prioridades Atuais (Próximos passos)
 
-## Config com hot-reload
+### 1. Estabilidade e Resiliência (Alta prioridade)
+- [ ] **Sistema de Retry com fila**  
+  → Tentativa automática de reenvio de fotos que falharam no upload antes de capturar nova imagem.
+- [ ] **Limpeza automática de disco**  
+  → Rotacionar/deletar arquivos antigos quando a pasta `camera_captures` atingir limite (ex: 2GB ou 7 dias).
+- [ ] **Hot-reload da configuração**  
+  → Recarregar `termuxcam.conf` via SIGHUP sem reiniciar o processo.
+- [ ] **Melhor tratamento de erros**  
+  → Notificação no Telegram quando houver falhas repetidas.
 
-Hoje precisa de sv restart pra aplicar mudanças no .conf. Um SIGHUP handler que recarrega a config sem matar o processo (e sem perder o wake-lock) seria um upgrade natural, já que você já tem o signal.NotifyContext no lugar.
+### 2. Inteligência e Detecção (Média/Alta)
+- [ ] Detecção avançada de eventos (pessoa, animal, vidro quebrando, etc) usando modelo leve (TFLite ou Python + YOLO)
+- [ ] Detecção de som (microfone) para disparar captura
+- [ ] Notificação com foto + descrição do evento (ex: "Pessoa detectada")
 
-## A peça de visão computacional que desenhamos antes
+### 3. Monitoramento e Observabilidade
+- [ ] Dashboard web local (Go + HTML) com status em tempo real
+- [ ] Monitoramento de hosts via Tailscale (notificar se algum cair)
+- [ ] Logging estruturado + opção de envio de logs para Telegram
+- [ ] Métricas exportáveis (Prometheus format)
 
-Voltando à arquitetura Go (captura) + Fedora (Python/YOLO) que montamos — isso continua sendo o próximo passo mais rico pro seu objetivo de estudo em CV/ML, e se encaixa bem como uma extensão modular do que já existe.
-Outras ideias pro Termux, dado seu perfil
+### 4. Qualidade de Vida e Manutenção
+- [ ] Suporte a múltiplos chats/telegram (grupos + usuários)
+- [ ] Comando `/photo` para tirar foto manualmente
+- [ ] Comando `/config` para ver configurações atuais
+- [ ] Versão automática + check de atualização
+- [ ] Nix-on-droid + configuração declarativa (SOPS para tokens)
+- [ ] Testes unitários e integração básicos
 
-## Espelhar parte do seu workflow NixOS
+### 5. Ideias Avançadas / Futuras
+- [ ] Modo "low power" com intervalos maiores quando sem movimento
+- [ ] Gravação de vídeo curto ao detectar movimento
+- [ ] Integração com Home Assistant ou MQTT
+- [ ] Sensor fusion (acelerômetro + câmera + som)
+- [ ] Modo "stealth" (sem LED da câmera)
 
-Você já gerencia dotfiles declarativamente nos três hosts — dá pra ter uma versão leve disso no Termux com Nix puro (pkg install nix) ou nix-on-droid, aplicando os mesmos princípios (SOPS pros segredos do bot do Telegram, por exemplo, em vez de token em texto puro no run script).
-Monitoramento da sua rede via Tailscale
-Um dashboard simples (Go + HTML servido localmente) que faz ping/healthcheck nos seus outros hosts da tailnet (dell1456, macutm, mac2011) e notifica no Telegram se algum cair — reaproveitando a mesma infra de bot que você já tem funcionando.
+---
 
-## Sensor logging
+## Notas
 
-termux-sensor dá acesso a acelerômetro, giroscópio, luz, proximidade — um projeto de "detector de queda" ou "log de exposição à luz ao longo do dia" é um exercício interessante de streaming de dados + análise simples, sem precisar de hardware extra.
+- **Prioridade atual:** Focar primeiro em **Retry + Limpeza de disco** para tornar o sistema realmente confiável.
+- **Próximo grande passo técnico:** Integração com modelo de visão computacional.
+- **Meta de estabilidade:** Conseguir rodar por semanas sem intervenção manual.
 
-## SSH bastion móvel
+---
 
-Com Tailscale já rodando no celular, ele pode servir como salto de emergência pra acessar seus hosts NixOS quando estiver fora de casa e o notebook não estiver à mão — vale configurar sshd no Termux (pkg install openssh) com chave pública, não senha.
-Qual dessas direções te atrai mais agora — continuar refinando o termuxcam (detecção de movimento seria o ganho mais imediato), ou partir pra algo novo tipo o dashboard de monitoramento da tailnet?
+**Última atualização:** 15 de julho de 2026
