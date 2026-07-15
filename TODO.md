@@ -8,63 +8,51 @@
 ## ✅ Concluído
 
 - [x] Captura periódica com `termux-camera-photo`
-- [x] Envio via Telegram (`sendPhoto`)
-- [x] Detecção de movimento via perceptual hash (dHash)
-- [x] Heartbeat (envio periódico mesmo sem movimento)
-- [x] Configurável via `termuxcam.conf`
-- [x] Persistência de estado (`motion_state.json`)
-- [x] Wake-lock para não dormir
-- [x] Comando `/status` rico com métricas do sistema
+- [x] Envio via Telegram
+- [x] Detecção de movimento via perceptual hash
+- [x] Heartbeat
+- [x] Configurável via arquivo
+- [x] Comando `/status` rico
 - [x] Comandos `/help`, `/log`, `/restart`
-- [x] Reset automático de contadores diários à meia-noite
+- [x] Reset automático de contadores diários
 
 ---
 
-## 🔄 Prioridades Atuais (Próximos passos)
+## 🔄 Em Progresso / Alta Prioridade
 
-### 1. Estabilidade e Resiliência (Alta prioridade)
-- [ ] **Sistema de Retry com fila**  
-  → Tentativa automática de reenvio de fotos que falharam no upload antes de capturar nova imagem.
-- [ ] **Limpeza automática de disco**  
-  → Rotacionar/deletar arquivos antigos quando a pasta `camera_captures` atingir limite (ex: 2GB ou 7 dias).
+### Novas Funcionalidades Solicitadas
+
+- [ ] **Comando `/photo`**  
+  → Tirar foto manualmente sob demanda via Telegram.
+
+- [ ] **Comando `/config`**  
+  → Exibir configurações atuais carregadas (interval, camera mode, motion, etc).
+
 - [ ] **Hot-reload da configuração**  
-  → Recarregar `termuxcam.conf` via SIGHUP sem reiniciar o processo.
-- [ ] **Melhor tratamento de erros**  
-  → Notificação no Telegram quando houver falhas repetidas.
-
-### 2. Inteligência e Detecção (Média/Alta)
-- [ ] Detecção avançada de eventos (pessoa, animal, vidro quebrando, etc) usando modelo leve (TFLite ou Python + YOLO)
-- [ ] Detecção de som (microfone) para disparar captura
-- [ ] Notificação com foto + descrição do evento (ex: "Pessoa detectada")
-
-### 3. Monitoramento e Observabilidade
-- [ ] Dashboard web local (Go + HTML) com status em tempo real
-- [ ] Monitoramento de hosts via Tailscale (notificar se algum cair)
-- [ ] Logging estruturado + opção de envio de logs para Telegram
-- [ ] Métricas exportáveis (Prometheus format)
-
-### 4. Qualidade de Vida e Manutenção
-- [ ] Suporte a múltiplos chats/telegram (grupos + usuários)
-- [ ] Comando `/photo` para tirar foto manualmente
-- [ ] Comando `/config` para ver configurações atuais
-- [ ] Versão automática + check de atualização
-- [ ] Nix-on-droid + configuração declarativa (SOPS para tokens)
-- [ ] Testes unitários e integração básicos
-
-### 5. Ideias Avançadas / Futuras
-- [ ] Modo "low power" com intervalos maiores quando sem movimento
-- [ ] Gravação de vídeo curto ao detectar movimento
-- [ ] Integração com Home Assistant ou MQTT
-- [ ] Sensor fusion (acelerômetro + câmera + som)
-- [ ] Modo "stealth" (sem LED da câmera)
+  → Recarregar `termuxcam.conf` via sinal SIGHUP sem precisar reiniciar o processo (mantendo wake-lock e estado).
 
 ---
 
-## Notas
+## 📌 Próximas Prioridades (em ordem sugerida)
 
-- **Prioridade atual:** Focar primeiro em **Retry + Limpeza de disco** para tornar o sistema realmente confiável.
-- **Próximo grande passo técnico:** Integração com modelo de visão computacional.
-- **Meta de estabilidade:** Conseguir rodar por semanas sem intervenção manual.
+### Estabilidade
+- [ ] Sistema de Retry com fila para uploads falhados
+- [ ] Rotação / Limpeza automática de arquivos antigos (limite de disco)
+- [ ] Melhor tratamento e notificação de erros persistentes
+
+### Inteligência
+- [ ] Detecção avançada (modelo leve de visão computacional)
+- [ ] Detecção de som para disparar captura
+
+### Monitoramento
+- [ ] Dashboard web local simples
+- [ ] Monitoramento de hosts via Tailscale
+- [ ] Logging estruturado + envio de logs
+
+### Qualidade de Vida
+- [ ] Versão automática + check de update no status
+- [ ] Nix-on-droid + configuração declarativa
+- [ ] Modo low-power quando sem movimento
 
 ---
 
