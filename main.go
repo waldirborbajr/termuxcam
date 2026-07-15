@@ -507,7 +507,10 @@ func sendToTelegram(ctx context.Context, photoPath, caption string) bool {
 
 func runOnce(ctx context.Context, state motionState) motionState {
 	now := time.Now()
-	nowStr := now.Format("2006-01-02 15:04:05")
+
+	loc, _ := time.LoadLocation("America/Sao_Paulo")
+	nowStr := now.In(loc).Format("2006-01-02 15:04:05")
+	// nowStr := now.Format("2006-01-02 15:04:05")
 
 	for _, cam := range camerasForMode(cameraMode) {
 		photo, err := capturePhoto(ctx, cam.hwID, cam.label)
@@ -584,6 +587,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// === FORÇAR TIMEZONE CORRETO ===
+    if err := os.Setenv("TZ", "America/Sao_Paulo"); err != nil {
+        logMsg("WARN: could not set TZ environment variable")
+    }
+
+    // Recarrega a localização (importante para Go)
+    time.Local = time.FixedZone("America/Sao_Paulo", -3*60*60) // UTC-3 (horário de Brasília)
+	
 	exeDir = getExeDir()
 	outputDir = filepath.Join(exeDir, "camera_captures")
 	logFilePath = filepath.Join(outputDir, "capture.log")
