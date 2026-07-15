@@ -34,6 +34,24 @@ const (
 	fileMode       = 0o600
 )
 
+// --- Physical hardware camera IDs ------------------------------------------
+//
+// These are what `termux-camera-photo -c <id>` actually expects, and they are
+// a property of the DEVICE, not of this app's config. They are NOT guaranteed
+// to be 0=front/1=back — on this phone, `termux-camera-info` reported:
+//
+//   {"id": "0", "facing": "back"}
+//   {"id": "1", "facing": "front"}
+//
+// i.e. the opposite of the intuitive guess. If you ever run this on a
+// different device, re-run `termux-camera-info` and update these two
+// constants — everything else in the file only deals with the semantic
+// "front"/"back" labels below and never touches a raw ID directly.
+const (
+	frontCameraHWID = "1"
+	backCameraHWID  = "0"
+)
+
 var (
 	exeDir      string
 	outputDir   string
@@ -41,7 +59,7 @@ var (
 	tgBotToken  = strings.TrimSpace(os.Getenv("TG_BOT_TOKEN"))
 	tgChatID    = strings.TrimSpace(os.Getenv("TG_CHAT_ID"))
 	interval    = 5 * time.Minute // fallback, used only if config is missing/invalid
-	cameraMode  = 1               // 0=front, 1=back, 2=both
+	cameraMode  = 1               // 0=back, 1=front, 2=both (config-facing semantic value)
 
 	httpClient = &http.Client{
 		Timeout: uploadTimeout,
@@ -50,6 +68,31 @@ var (
 		},
 	}
 )
+
+// camSpec pairs a human-readable label with the physical hardware ID needed
+// to actually address that camera. Everything downstream of camerasForMode
+// works off camSpec, so there is exactly one place (the constants above)
+// where a device's physical camera numbering can be wrong.
+type camSpec struct {
+	label string // used in filenames, captions, and logs — always correct by construction
+	hwID  string // passed verbatim to `termux-camera-photo -c`
+}
+
+// camerasForMode translates the config's semantic camera selection into the
+// concrete camera(s) to capture from, in a fixed, predictable order.
+// Config convention: 0=back, 1=front, 2=both.
+func camerasForMode(mode int) []camSpec {
+	switch mode {
+	case 0:
+		return []camSpec{{"back", backCameraHWID}}
+	case 1:
+		return []camSpec{{"front", frontCameraHWID}}
+	case 2:
+		return []camSpec{{"front", frontCameraHWID}, {"back", backCameraHWID}}
+	default:
+		return []camSpec{{"front", frontCameraHWID}}
+	}
+}
 
 func getExeDir() string {
 	exe, err := os.Executable()
@@ -81,8 +124,7 @@ func logMsg(msg string) {
 
 // stripInlineComment removes a trailing "# ..." comment from a config value.
 // Without this, "capture=3h  # or 2h, 30m" fails to parse as a duration and
-// silently falls back to the default interval — this was the root cause of
-// captures firing every 5 minutes instead of every 3 hours.
+// silently falls back to the default interval.
 func stripInlineComment(s string) string {
 	if idx := strings.Index(s, "#"); idx != -1 {
 		s = s[:idx]
@@ -98,8 +140,8 @@ func loadConfig() {
 # capture=15m   (m = minutes, h = hours)
 capture=5m
 
-# camera=0  -> Front only
-# camera=1  -> Back only (default)
+# camera=0  -> Back only
+# camera=1  -> Front only (default)
 # camera=2  -> Both cameras
 camera=1
 `
@@ -161,7 +203,12 @@ camera=1
 		}
 	}
 
-	logMsg(fmt.Sprintf("Config loaded -> interval=%s | cameraMode=%d | config=%s", interval, cameraMode, configPath))
+	labels := make([]string, 0, 2)
+	for _, c := range camerasForMode(cameraMode) {
+		labels = append(labels, fmt.Sprintf("%s(hw=%s)", c.label, c.hwID))
+	}
+	logMsg(fmt.Sprintf("Config loaded -> interval=%s | cameraMode=%d -> %s | config=%s",
+		interval, cameraMode, strings.Join(labels, ", "), configPath))
 }
 
 func parseDuration(s string) (time.Duration, error) {
@@ -200,23 +247,26 @@ func releaseWakeLock() {
 	}
 }
 
-func capturePhoto(ctx context.Context, cameraID string) (string, error) {
+// capturePhoto takes a photo with the given physical hardware camera ID.
+// label is used only for the output filename — it must already be the
+// correct semantic label (from camSpec), not derived from hwID here.
+func capturePhoto(ctx context.Context, hwID, label string) (string, error) {
 	if _, err := exec.LookPath("termux-camera-photo"); err != nil {
 		return "", fmt.Errorf("termux-camera-photo not found: %w", err)
 	}
 
 	ts := time.Now().Format("20060102_150405")
-	outfile := filepath.Join(outputDir, fmt.Sprintf("capture_%s_cam%s.jpg", ts, cameraID))
+	outfile := filepath.Join(outputDir, fmt.Sprintf("capture_%s_%s.jpg", label, ts))
 
 	cctx, cancel := context.WithTimeout(ctx, captureTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, "termux-camera-photo", "-c", cameraID, outfile)
+	cmd := exec.CommandContext(cctx, "termux-camera-photo", "-c", hwID, outfile)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		logMsg(fmt.Sprintf("Capture failed (cam %s): %s", cameraID, stderr.String()))
+		logMsg(fmt.Sprintf("Capture failed (%s, hw=%s): %s", label, hwID, stderr.String()))
 		os.Remove(outfile)
 		return "", err
 	}
@@ -227,7 +277,7 @@ func capturePhoto(ctx context.Context, cameraID string) (string, error) {
 		return "", fmt.Errorf("empty or missing capture file")
 	}
 
-	logMsg(fmt.Sprintf("Captured successfully: %s", outfile))
+	logMsg(fmt.Sprintf("Captured successfully (%s, hw=%s): %s", label, hwID, outfile))
 	return outfile, nil
 }
 
@@ -286,9 +336,6 @@ func sendToTelegram(ctx context.Context, photoPath, caption string) bool {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		// Note: never log `err` verbatim if it could ever embed the URL with
-		// the token; net/http errors don't include the body, so this is safe,
-		// but we still avoid logging headers/URLs elsewhere.
 		logMsg("ERROR: telegram request failed: " + err.Error())
 		return false
 	}
@@ -316,23 +363,13 @@ func sendToTelegram(ctx context.Context, photoPath, caption string) bool {
 func runOnce(ctx context.Context) {
 	now := time.Now().Format("2006-01-02 15:04:05")
 
-	var cams []string
-	if cameraMode == 0 || cameraMode == 2 {
-		cams = append(cams, "0")
-	}
-	if cameraMode == 1 || cameraMode == 2 {
-		cams = append(cams, "1")
-	}
-
-	names := map[string]string{"0": "Front Camera", "1": "Back Camera"}
-
-	for _, id := range cams {
-		photo, err := capturePhoto(ctx, id)
+	for _, cam := range camerasForMode(cameraMode) {
+		photo, err := capturePhoto(ctx, cam.hwID, cam.label)
 		if err != nil {
-			continue
+			continue // one camera failing shouldn't block the other in "both" mode
 		}
 
-		caption := fmt.Sprintf("%s: %s", names[id], now)
+		caption := fmt.Sprintf("%s camera: %s", strings.Title(cam.label), now)
 
 		if sendToTelegram(ctx, photo, caption) {
 			if err := os.Remove(photo); err != nil {
