@@ -450,26 +450,27 @@ func handleStatus() {
 	nextCapture := time.Now().Add(interval).Format("15:04")
 	metricsMutex.RUnlock()
 
-	status := fmt.Sprintf("📊 *termuxcam v%s - Full Status*\n\n"+
-		"⏱ *Uptime:* `%s`\n"+
-		"📸 *Captures Today:* `%d` | Total: `%d`\n"+
-		"📸 *Last Capture:* `%s`\n"+
-		"💾 *Disk:* `%s`\n"+
-		"📁 *Folder Usage:* `%s`\n"+
-		"🧠 *Memory:* `%s`\n"+
-		"🔥 *CPU Usage:* `%s`\n"+
-		"🌡️ *CPU Temp:* `%s`\n"+
-		"🔋 *Battery:* `%s`\n"+
-		"🌐 *Local IP:* `%s`\n"+
-		"🌍 *Public IP:* `%s`\n"+
-		"📡 *WiFi:* `%s`\n"+
-		"📱 *Device:* `%s`\n"+
-		"📷 *Camera Mode:* `%d` | Motion: `%v`\n"+
-		"⏰ *Interval:* `%s` | Next: `%s`\n"+
-		"❤️ *Heartbeat:* `%s`\n"+
-		"❌ *Failed Uploads Today:* `%d`\n"+
-		"⚠️ *Last Error:* `%s`\n"+
-		"📜 *Last Log:* `%s`",
+	status := fmt.Sprintf(`📊 *termuxcam v%s - Full Status*
+
+⏱ *Uptime:* %s
+📸 *Capturas Hoje:* %d | Total: %d
+📸 *Última Captura:* %s
+💾 *Disco:* %s
+📁 *Pasta:* %s
+🧠 *Memória:* %s
+🔥 *CPU:* %s
+🌡️ *CPU Temp:* %s
+🔋 *Bateria:* %s
+🌐 *IP Local:* %s
+🌍 *IP Público:* %s
+📡 *WiFi:* %s
+📱 *Aparelho:* %s
+📷 *Câmera:* %d | Motion: %v
+⏰ *Intervalo:* %s | Próxima: %s
+❤️ *Heartbeat:* %s
+❌ *Falhas Hoje:* %d
+⚠️ *Último Erro:* %s
+📜 *Último Log:* %s`,
 		Version, uptime, capturesToday, totalCaptures, lastCap,
 		getDiskUsage(), getFolderUsage(), getMemoryUsage(),
 		getCPUUsagePercent(), getCPUTemperature(), getBatteryInfo(),
