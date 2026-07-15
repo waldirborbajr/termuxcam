@@ -452,35 +452,48 @@ func handleStatus() {
 
 	status := fmt.Sprintf(`📊 *termuxcam v%s - Full Status*
 
-⏱ *Uptime:* %s
-📸 *Capturas Hoje:* %d | Total: %d
-📸 *Última Captura:* %s
-💾 *Disco:* %s
-📁 *Pasta:* %s
-🧠 *Memória:* %s
-🔥 *CPU:* %s
-🌡️ *CPU Temp:* %s
-🔋 *Bateria:* %s
-🌐 *IP Local:* %s
-🌍 *IP Público:* %s
-📡 *WiFi:* %s
-📱 *Aparelho:* %s
-📷 *Câmera:* %d | Motion: %v
-⏰ *Intervalo:* %s | Próxima: %s
-❤️ *Heartbeat:* %s
-❌ *Falhas Hoje:* %d
-⚠️ *Último Erro:* %s
-📜 *Último Log:* %s`,
-		Version, uptime, capturesToday, totalCaptures, lastCap,
-		getDiskUsage(), getFolderUsage(), getMemoryUsage(),
-		getCPUUsagePercent(), getCPUTemperature(), getBatteryInfo(),
-		getLocalIP(), getPublicIP(), getWifiStatus(), getDeviceInfo(),
-		cameraMode, motionEnabled, interval, nextCapture, heartbeat,
-		failedUploadsToday, lastError, getLastLogLine())
+⏱ Uptime: %s
+📸 Capturas Hoje: %d | Total: %d
+📸 Última Captura: %s
+💾 Disco: %s
+📁 Pasta: %s
+🧠 Memória: %s
+🔥 CPU: %s
+🌡️ CPU Temp: %s
+🔋 Bateria: %s
+🌐 IP Local: %s
+🌍 IP Público: %s
+📡 WiFi: %s
+📱 Aparelho: %s
+📷 Câmera: %d | Motion: %v
+⏰ Intervalo: %s | Próxima: %s
+❤️ Heartbeat: %s
+❌ Falhas Hoje: %d
+⚠️ Último Erro: %s
+📜 Último Log: %s`,
+		Version,
+		uptime,
+		capturesToday, totalCaptures,
+		lastCap,
+		getDiskUsage(),
+		getFolderUsage(),
+		getMemoryUsage(),
+		getCPUUsagePercent(),
+		getCPUTemperature(),
+		getBatteryInfo(),
+		getLocalIP(),
+		getPublicIP(),
+		getWifiStatus(),
+		getDeviceInfo(),
+		cameraMode, motionEnabled,
+		interval, nextCapture,
+		heartbeat,
+		failedUploadsToday,
+		lastError,
+		getLastLogLine())
 
 	sendTextMessage(status)
 }
-
 func handleRestart() {
 	sendTextMessage("🔄 Restarting termuxcam...")
 	logMsg("Restart requested via /restart command")
