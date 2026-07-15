@@ -18,7 +18,10 @@ import (
 
 const (
 	cameraID         = "1"
-	captureTimeout   = 20 * time.Second
+	captureTimeout   = 45 * time.Second // increased from 20s: first capture after
+	                                     // Termux:API wakes up from a cold state can
+	                                     // take longer than 20s, causing the process
+	                                     // to be killed mid-write and leave a 0-byte file
 	uploadTimeout    = 30 * time.Second
 	intervalDuration = 5 * time.Minute
 )
@@ -69,7 +72,6 @@ func capturePhoto() (string, error) {
 	}
 
 	ts := time.Now().Format("20060102_150405")
-	// ts := time.Now().Format("20060102_150405")
 	outfile := filepath.Join(outputDir, fmt.Sprintf("capture_%s.jpg", ts))
 
 	ctx, cancel := context.WithTimeout(context.Background(), captureTimeout)
@@ -81,15 +83,22 @@ func capturePhoto() (string, error) {
 
 	if err := cmd.Run(); err != nil {
 		logMsg(fmt.Sprintf("capture failed: %s (%v)", stderr.String(), err))
+		os.Remove(outfile) // clean up any partial/empty file left behind
 		return "", err
 	}
 
-	if _, err := os.Stat(outfile); err != nil {
+	info, err := os.Stat(outfile)
+	if err != nil {
 		logMsg("capture reported success but file not found")
 		return "", err
 	}
+	if info.Size() == 0 {
+		logMsg("capture produced an empty (0-byte) file — likely killed mid-write, discarding")
+		os.Remove(outfile)
+		return "", fmt.Errorf("empty capture file")
+	}
 
-	logMsg(fmt.Sprintf("saved -> %s", outfile))
+	logMsg(fmt.Sprintf("saved -> %s (%d bytes)", outfile, info.Size()))
 	return outfile, nil
 }
 
