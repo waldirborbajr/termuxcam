@@ -430,6 +430,16 @@ func releaseWakeLock() {
 }
 
 // Telegram Commands
+func handleHelp() {
+	helpText := "📋 *Available Commands*\n\n" +
+		"/status - Show full system status\n" +
+		"/log - Show last 15 log lines\n" +
+		"/restart - Restart termuxcam service\n" +
+		"/help - Show this help message"
+
+	sendTextMessage(helpText)
+}
+
 func handleStatus() {
 	metricsMutex.RLock()
 	uptime := time.Since(startTime).Round(time.Second)
@@ -474,7 +484,7 @@ func handleRestart() {
 	sendTextMessage("🔄 Restarting termuxcam...")
 	logMsg("Restart requested via /restart command")
 	time.Sleep(1 * time.Second)
-	os.Exit(0) // Will be restarted by user or service
+	os.Exit(0)
 }
 
 func handleLog() {
@@ -490,7 +500,7 @@ func sendTextMessage(text string) {
 }
 
 func startTelegramPolling(ctx context.Context) {
-	logMsg("Telegram polling started - commands: /status, /restart, /log")
+	logMsg("Telegram polling started - commands: /status, /log, /restart, /help")
 	offset := 0
 	for {
 		select {
@@ -524,17 +534,19 @@ func startTelegramPolling(ctx context.Context) {
 				switch text {
 				case "/status":
 					handleStatus()
-				case "/restart":
-					handleRestart()
 				case "/log":
 					handleLog()
+				case "/restart":
+					handleRestart()
+				case "/help":
+					handleHelp()
 				}
 			}
 		}
 	}
 }
 
-// Reset counters at midnight
+// Midnight Reset
 func startMidnightReset() {
 	ticker := time.NewTicker(1 * time.Minute)
 	for range ticker.C {
@@ -724,7 +736,7 @@ func main() {
 	}
 }
 
-// Midnight reset
+// Midnight Reset
 func startMidnightReset() {
 	ticker := time.NewTicker(1 * time.Minute)
 	for range ticker.C {
