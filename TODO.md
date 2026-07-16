@@ -27,7 +27,7 @@
   → Tentativa automática de reenvio de fotos que falharam no upload antes de capturar nova imagem.
 - [ ] **Limpeza automática de disco**  
   → Rotacionar/deletar arquivos antigos quando a pasta `camera_captures` atingir limite (ex: 2GB ou 7 dias).
-- [ ] **Hot-reload da configuração**  
+- [x] **Hot-reload da configuração**  
   → Recarregar `termuxcam.conf` via SIGHUP sem reiniciar o processo.
 - [ ] **Melhor tratamento de erros**  
   → Notificação no Telegram quando houver falhas repetidas.
@@ -45,8 +45,8 @@
 
 ### 4. Qualidade de Vida e Manutenção
 - [ ] Suporte a múltiplos chats/telegram (grupos + usuários)
-- [ ] Comando `/photo` para tirar foto manualmente
-- [ ] Comando `/config` para ver configurações atuais
+- [x] Comando `/photo` para tirar foto manualmente
+- [x] Comando `/config` para ver configurações atuais
 - [ ] Versão automática + check de atualização
 - [ ] Nix-on-droid + configuração declarativa (SOPS para tokens)
 - [ ] Testes unitários e integração básicos
