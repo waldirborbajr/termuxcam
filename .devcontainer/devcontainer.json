@@ -18,10 +18,8 @@
       "settings": {
         "go.toolsManagement.checkForUpdates": "local",
         "go.useLanguageServer": true,
-        "go.goroot": "/usr/local/go",
         "go.formatTool": "gofumpt",
         "go.lintTool": "golangci-lint",
-        "go.testFlags": ["-v"],
         "editor.formatOnSave": true,
         "editor.inlayHints.enabled": "on",
         "files.insertFinalNewline": true,
@@ -30,18 +28,7 @@
     }
   },
 
-  "features": {
-    "ghcr.io/devcontainers/features/common-utils:1": {
-      "configureZshAsDefaultShell": true,
-      "installOhMyZsh": true,
-      "nonFreePackages": true
-    },
-    "ghcr.io/devcontainers/features/go:1": {
-      "version": "latest"
-    }
-  },
-
-  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y ripgrep fd-find bat git-delta hyperfine curl make gcc g++ && go install github.com/air-verse/air@latest && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest && go install golang.org/x/tools/cmd/goimports@latest && go install mvdan.cc/gofumpt@latest && go install honnef.co/go/tools/cmd/staticcheck@latest && go install github.com/go-delve/delve/cmd/dlv@latest && go install github.com/kyoh86/richgo@latest && echo '🚀 Go Mega Power Environment loaded!'",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y zsh ripgrep fd-find bat git-delta hyperfine make gcc g++ curl && sh -c \"$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\" \"\" --unattended && go install github.com/air-verse/air@latest && go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest && go install mvdan.cc/gofumpt@latest && go install honnef.co/go/tools/cmd/staticcheck@latest && go install github.com/go-delve/delve/cmd/dlv@latest && go install github.com/kyoh86/richgo@latest && echo '🚀 Go Mega Power Environment loaded!' && echo 'export PATH=$PATH:/go/bin' >> ~/.zshrc",
 
   "postStartCommand": "go version && golangci-lint --version && air --version",
 
@@ -57,8 +44,5 @@
     "source=${localEnv:HOME}/go/pkg/mod,target=/go/pkg/mod,type=bind,consistency=cached"
   ],
 
-  "forwardPorts": [8080, 3000, 5000, 5432, 6379],
-  "portsAttributes": {
-    "8080": { "label": "App", "onAutoForward": "notify" }
-  }
+  "forwardPorts": [8080, 3000, 5000, 5432, 6379]
 }
