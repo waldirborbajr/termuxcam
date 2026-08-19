@@ -56,6 +56,7 @@ func getExeDir() string {
 }
 
 func main() {
+
 	if tgBotToken == "" || tgChatID == "" {
 		fmt.Println("ERROR: TG_BOT_TOKEN or TG_CHAT_ID not set")
 		os.Exit(1)
@@ -114,6 +115,8 @@ func main() {
 	defer ticker.Stop()
 
 	logMsg(fmt.Sprintf("termuxcam v%s started successfully", Version))
+	logMsg(fmt.Sprintf("termuxcam TG_BOT_TOKEN=%s ", tgBotToken))
+	logMsg(fmt.Sprintf("termuxcam TG_CHAT_ID=%s", tgChatID))
 
 	state = runOnce(ctx, getConfig(), state, false)
 	saveState(state)
