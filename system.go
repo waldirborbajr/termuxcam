@@ -1,128 +1,294 @@
 package main
 
 import (
-	"encoding/json"
+	"bufio"
 	"fmt"
-	"io"
-	"net/http"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
-func getDiskUsage() string {
-	out, _ := exec.Command("df", "-h", outputDir).Output()
-	lines := strings.Split(string(out), "\n")
-	if len(lines) > 1 {
-		f := strings.Fields(lines[1])
-		if len(f) >= 4 {
-			return fmt.Sprintf("%s / %s", f[2], f[1])
-		}
-	}
-	return "Unknown"
+type SystemInfo struct {
+	DeviceModel    string       `json:"device_model"`
+	AndroidVersion string       `json:"android_version"`
+	TermuxVersion  string       `json:"termux_version"`
+	APILevel       int          `json:"api_level"`
+	CPUArch        string       `json:"cpu_arch"`
+	CPUCores       int          `json:"cpu_cores"`
+	MemoryTotal    string       `json:"memory_total"`
+	MemoryFree     string       `json:"memory_free"`
+	StorageTotal   string       `json:"storage_total"`
+	StorageFree    string       `json:"storage_free"`
+	BatteryLevel   int          `json:"battery_level"`
+	BatteryStatus  string       `json:"battery_status"`
+	Uptime         string       `json:"uptime"`
+	Cameras        []CameraInfo `json:"cameras"`
+	Timestamp      time.Time    `json:"timestamp"`
 }
 
-func getFolderUsage() string {
-	out, _ := exec.Command("du", "-sh", outputDir).Output()
-	parts := strings.Fields(string(out))
-	if len(parts) > 0 {
-		return parts[0]
-	}
-	return "Unknown"
+type CameraInfo struct {
+	ID     string `json:"id"`
+	Facing string `json:"facing"`
 }
 
-func getMemoryUsage() string {
-	out, _ := exec.Command("free", "-h").Output()
-	lines := strings.Split(string(out), "\n")
-	if len(lines) > 1 {
-		f := strings.Fields(lines[1])
-		if len(f) >= 3 {
-			return fmt.Sprintf("%s / %s", f[2], f[1])
-		}
+func GetSystemInfo() SystemInfo {
+	info := SystemInfo{
+		Timestamp: time.Now(),
 	}
-	return "Unknown"
+
+	info.DeviceModel = getDeviceModel()
+	info.AndroidVersion = getAndroidVersion()
+	info.TermuxVersion = getTermuxVersion()
+	info.APILevel = getAPILevel()
+	info.CPUArch = getCPUArch()
+	info.CPUCores = getCPUCores()
+	info.Uptime = getUptime()
+
+	info.MemoryTotal, info.MemoryFree = getMemoryInfo()
+	info.StorageTotal, info.StorageFree = getStorageInfo()
+	info.BatteryLevel, info.BatteryStatus = getBatteryInfo()
+	info.Cameras = getCameraInfo()
+
+	return info
 }
 
-func getCPUUsagePercent() string {
-	out, _ := exec.Command("top", "-bn1").Output()
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "Cpu(s)") {
-			parts := strings.Split(line, ",")
-			if len(parts) > 0 {
-				idleStr := strings.TrimSpace(strings.Split(parts[len(parts)-1], "%")[0])
-				if idle, err := strconv.ParseFloat(idleStr, 64); err == nil {
-					return fmt.Sprintf("%.1f%%", 100-idle)
-				}
+func getDeviceModel() string {
+	cmd := exec.Command("getprop", "ro.product.model")
+	output, err := cmd.Output()
+	if err != nil {
+		return "Desconhecido"
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func getAndroidVersion() string {
+	cmd := exec.Command("getprop", "ro.build.version.release")
+	output, err := cmd.Output()
+	if err != nil {
+		return "Desconhecida"
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func getAPILevel() int {
+	cmd := exec.Command("getprop", "ro.build.version.sdk")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	val, _ := strconv.Atoi(strings.TrimSpace(string(output)))
+	return val
+}
+
+func getTermuxVersion() string {
+	cmd := exec.Command("pkg", "list-installed")
+	output, err := cmd.Output()
+	if err != nil {
+		return "Desconhecida"
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "termux/") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				return parts[1]
 			}
 		}
 	}
-	return "N/A"
+	return "Desconhecida"
 }
 
-func getCPUTemperature() string {
-	out, err := exec.Command("cat", "/sys/class/thermal/thermal_zone0/temp").Output()
-	if err == nil {
-		if temp, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil {
-			return fmt.Sprintf("%.1f°C", float64(temp)/1000)
+func getCPUArch() string {
+	return runtime.GOARCH
+}
+
+func getCPUCores() int {
+	cmd := exec.Command("nproc")
+	output, err := cmd.Output()
+	if err != nil {
+		return runtime.NumCPU()
+	}
+	cores, _ := strconv.Atoi(strings.TrimSpace(string(output)))
+	if cores == 0 {
+		return runtime.NumCPU()
+	}
+	return cores
+}
+
+func getUptime() string {
+	cmd := exec.Command("uptime")
+	output, err := cmd.Output()
+	if err != nil {
+		return "Desconhecido"
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func getMemoryInfo() (total, free string) {
+	cmd := exec.Command("free", "-h")
+	output, err := cmd.Output()
+	if err != nil {
+		return "N/A", "N/A"
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "Mem:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				total = parts[1]
+				free = parts[3]
+				return
+			}
 		}
 	}
-	return "N/A"
+	return "N/A", "N/A"
 }
 
-func getLocalIP() string {
-	out, _ := exec.Command("ip", "route", "get", "1").Output()
-	parts := strings.Fields(string(out))
-	for i, p := range parts {
-		if p == "src" && i+1 < len(parts) {
-			return parts[i+1]
+func getStorageInfo() (total, free string) {
+	cmd := exec.Command("df", "-h", ".")
+	output, err := cmd.Output()
+	if err != nil {
+		return "N/A", "N/A"
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	lines := []string{}
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	if len(lines) >= 2 {
+		parts := strings.Fields(lines[1])
+		if len(parts) >= 4 {
+			total = parts[1]
+			free = parts[3]
+			return
 		}
 	}
-	return "N/A"
+	return "N/A", "N/A"
 }
 
-func getPublicIP() string {
-	resp, err := http.Get("https://api.ipify.org")
+func getBatteryInfo() (level int, status string) {
+	cmd := exec.Command("termux-battery-status")
+	output, err := cmd.Output()
 	if err != nil {
-		return "N/A"
+		return 0, "Desconhecido"
 	}
-	defer resp.Body.Close()
-	ip, _ := io.ReadAll(resp.Body)
-	return strings.TrimSpace(string(ip))
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "\"percentage\"") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				val := strings.TrimSuffix(strings.TrimSpace(parts[1]), ",")
+				level, _ = strconv.Atoi(val)
+			}
+		}
+		if strings.Contains(line, "\"status\"") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				status = strings.Trim(strings.TrimSpace(parts[1]), "\",")
+			}
+		}
+	}
+	return
 }
 
-func getDeviceInfo() string {
-	model, _ := exec.Command("getprop", "ro.product.model").Output()
-	android, _ := exec.Command("getprop", "ro.build.version.release").Output()
-	return fmt.Sprintf("%s (Android %s)", strings.TrimSpace(string(model)), strings.TrimSpace(string(android)))
-}
+func getCameraInfo() []CameraInfo {
+	var cameras []CameraInfo
 
-func getWifiStatus() string {
-	out, err := exec.Command("termux-wifi-connectioninfo").Output()
+	cmd := exec.Command("termux-camera-info")
+	output, err := cmd.Output()
 	if err != nil {
-		return "N/A"
+		return cameras
 	}
-	var wifi struct {
-		SupplicantState string `json:"supplicantState"`
-		Rssi            int    `json:"rssi"`
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "\"id\"") && strings.Contains(line, "\"facing\"") {
+			var id, facing string
+
+			idParts := strings.Split(line, "\"id\"")
+			if len(idParts) >= 2 {
+				idSubParts := strings.Split(idParts[1], ":")
+				if len(idSubParts) >= 2 {
+					id = strings.Trim(strings.TrimSpace(idSubParts[1]), "\",")
+				}
+			}
+
+			facingParts := strings.Split(line, "\"facing\"")
+			if len(facingParts) >= 2 {
+				facingSubParts := strings.Split(facingParts[1], ":")
+				if len(facingSubParts) >= 2 {
+					facing = strings.Trim(strings.TrimSpace(facingSubParts[1]), "\",")
+				}
+			}
+
+			if id != "" && facing != "" {
+				cameras = append(cameras, CameraInfo{
+					ID:     id,
+					Facing: facing,
+				})
+			}
+		}
 	}
-	json.Unmarshal(out, &wifi)
-	if wifi.SupplicantState == "COMPLETED" {
-		return fmt.Sprintf("Connected (signal: %d dBm)", wifi.Rssi)
-	}
-	return "Disconnected"
+
+	return cameras
 }
 
-func getBatteryInfo() string {
-	out, err := exec.Command("termux-battery-status").Output()
-	if err != nil {
-		return "N/A"
+func PrintSystemInfo() {
+	info := GetSystemInfo()
+
+	fmt.Println("📱 INFORMAÇÕES DO SISTEMA")
+	fmt.Println(strings.Repeat("=", 40))
+	fmt.Printf("📱 Dispositivo:     %s\n", info.DeviceModel)
+	fmt.Printf("🤖 Android:        %s (API %d)\n", info.AndroidVersion, info.APILevel)
+	fmt.Printf("📦 Termux:         %s\n", info.TermuxVersion)
+	fmt.Printf("🖥️  Arquitetura:    %s\n", info.CPUArch)
+	fmt.Printf("🧠 Núcleos CPU:    %d\n", info.CPUCores)
+	fmt.Printf("🔄 Uptime:         %s\n", info.Uptime)
+	fmt.Println()
+	fmt.Printf("💾 Memória Total:  %s\n", info.MemoryTotal)
+	fmt.Printf("💾 Memória Livre:  %s\n", info.MemoryFree)
+	fmt.Println()
+	fmt.Printf("📀 Armazenamento:  %s\n", info.StorageTotal)
+	fmt.Printf("📀 Livre:         %s\n", info.StorageFree)
+	fmt.Println()
+	fmt.Printf("🔋 Bateria:        %d%% (%s)\n", info.BatteryLevel, info.BatteryStatus)
+	fmt.Println()
+	fmt.Println("📷 Câmeras disponíveis:")
+	for _, cam := range info.Cameras {
+		fmt.Printf("  - ID: %s, Facing: %s\n", cam.ID, cam.Facing)
 	}
-	var bat struct {
-		Percentage  int     `json:"percentage"`
-		Temperature float64 `json:"temperature"`
-		Health      string  `json:"health"`
+	fmt.Println(strings.Repeat("=", 40))
+}
+
+func GetSystemInfoString() string {
+	info := GetSystemInfo()
+
+	var sb strings.Builder
+	sb.WriteString("📱 **SISTEMA - termuxcam**\n\n")
+	sb.WriteString(fmt.Sprintf("📱 **Dispositivo:** %s\n", info.DeviceModel))
+	sb.WriteString(fmt.Sprintf("🤖 **Android:** %s (API %d)\n", info.AndroidVersion, info.APILevel))
+	sb.WriteString(fmt.Sprintf("📦 **Termux:** %s\n", info.TermuxVersion))
+	sb.WriteString(fmt.Sprintf("🖥️ **Arquitetura:** %s\n", info.CPUArch))
+	sb.WriteString(fmt.Sprintf("🧠 **Núcleos CPU:** %d\n", info.CPUCores))
+	sb.WriteString(fmt.Sprintf("🔄 **Uptime:** %s\n", info.Uptime))
+	sb.WriteString(fmt.Sprintf("💾 **Memória:** %s (livre: %s)\n", info.MemoryTotal, info.MemoryFree))
+	sb.WriteString(fmt.Sprintf("📀 **Armazenamento:** %s (livre: %s)\n", info.StorageTotal, info.StorageFree))
+	sb.WriteString(fmt.Sprintf("🔋 **Bateria:** %d%% (%s)\n", info.BatteryLevel, info.BatteryStatus))
+	sb.WriteString("\n📷 **Câmeras:**\n")
+	for _, cam := range info.Cameras {
+		sb.WriteString(fmt.Sprintf("  - ID: %s, %s\n", cam.ID, cam.Facing))
 	}
-	json.Unmarshal(out, &bat)
-	return fmt.Sprintf("%d%% | %.1f°C | %s", bat.Percentage, bat.Temperature, bat.Health)
+
+	return sb.String()
 }

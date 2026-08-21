@@ -1,68 +1,131 @@
 package main
 
 import (
-	"context"
 	"fmt"
+	"log"
 	"os"
-	"strings"
+	"os/exec"
+	"path/filepath"
 	"time"
 )
 
-// runOnce captures from every camera selected by cfgSnapshot.CameraMode.
-// When force is true (manual /photo request), motion detection is bypassed
-// and the frame is always uploaded — but the motion baseline is still
-// updated, so the next automatic cycle compares against this fresh frame
-// rather than a stale one.
-func runOnce(ctx context.Context, cfgSnapshot appConfig, state motionState, force bool) motionState {
-	now := time.Now()
-	nowStr := now.Format("2006-01-02 15:04:05")
+const (
+	FrontCameraHWID = "1"
+	BackCameraHWID  = "0"
+)
 
-	for _, cam := range camerasForMode(cfgSnapshot.CameraMode) {
-		photo, err := capturePhoto(ctx, cam.hwID, cam.label)
+func CaptureBurst(cameraID string, count int) ([]string, error) {
+	var files []string
+	tempDir := filepath.Join(GetBinaryDir(), "camera_captures", "temp")
+	os.MkdirAll(tempDir, 0755)
+
+	for i := 0; i < count; i++ {
+		filename := fmt.Sprintf("%s_%d_%d.jpg",
+			time.Now().Format("20060102_150405"),
+			i+1,
+			time.Now().UnixNano())
+
+		filePath := filepath.Join(tempDir, filename)
+
+		cmd := exec.Command("termux-camera-photo", "-c", cameraID, filePath)
+		if err := cmd.Run(); err != nil {
+			return files, fmt.Errorf("erro na captura %d: %w", i+1, err)
+		}
+
+		if info, err := os.Stat(filePath); err == nil && info.Size() > 0 {
+			files = append(files, filePath)
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return files, nil
+}
+
+func DoCapture() {
+	log.Println("📸 Iniciando ciclo de captura...")
+
+	config := GetConfig()
+
+	cameras := []string{}
+	switch config.CameraMode {
+	case 0:
+		cameras = []string{BackCameraHWID}
+	case 1:
+		cameras = []string{FrontCameraHWID}
+	case 2:
+		cameras = []string{FrontCameraHWID, BackCameraHWID}
+	}
+
+	for _, cameraID := range cameras {
+		files, err := CaptureBurst(cameraID, config.BurstCount)
 		if err != nil {
+			log.Printf("❌ Erro na captura: %v", err)
+			IncrementErrorCount()
 			continue
 		}
 
-		shouldSend := true
-		var newHash uint64
-		prev, hadPrev := state.Cameras[cam.label]
+		for _, filePath := range files {
+			if err := AddExifMetadata(filePath); err != nil {
+				log.Printf("⚠️ Erro ao adicionar metadados: %v", err)
+			}
 
-		if cfgSnapshot.MotionEnabled {
-			if h, herr := computeDHash(photo); herr == nil {
-				newHash = h
-				if hadPrev && !force {
-					dist := hammingDistance(h, prev.Hash)
-					heartbeatDue := cfgSnapshot.Heartbeat > 0 && !prev.LastSent.IsZero() && now.Sub(prev.LastSent) >= cfgSnapshot.Heartbeat
-					if dist < cfgSnapshot.MotionThreshold && !heartbeatDue {
-						shouldSend = false
-					}
+			if config.EncryptionKey != "" {
+				encrypted, err := EncryptFile(filePath, config.EncryptionKey)
+				if err != nil {
+					log.Printf("❌ Erro na criptografia: %v", err)
+					continue
 				}
-				state.Cameras[cam.label] = camState{Hash: newHash, LastSent: prev.LastSent}
+
+				encPath := filepath.Join(GetBinaryDir(), "camera_captures", "encrypted",
+					filepath.Base(filePath)+".enc")
+				if err := os.WriteFile(encPath, []byte(encrypted), 0644); err != nil {
+					log.Printf("❌ Erro ao salvar arquivo criptografado: %v", err)
+				}
 			}
-		}
 
-		if !shouldSend {
-			os.Remove(photo)
-			continue
-		}
+			if Bot != nil {
+				caption := fmt.Sprintf("📸 %s Camera\n🕐 %s",
+					map[string]string{FrontCameraHWID: "Frontal", BackCameraHWID: "Traseira"}[cameraID],
+					time.Now().Format("02/01/2006 15:04:05"))
 
-		suffix := ""
-		if force {
-			suffix = " (manual)"
-		}
-		caption := fmt.Sprintf("%s camera: %s%s", strings.Title(cam.label), nowStr, suffix)
-
-		if sendToTelegram(ctx, photo, caption) {
-			os.Remove(photo)
-			metricsMutex.Lock()
-			lastSuccessfulCapture = time.Now()
-			metricsMutex.Unlock()
-			if cfgSnapshot.MotionEnabled {
-				cs := state.Cameras[cam.label]
-				cs.LastSent = now
-				state.Cameras[cam.label] = cs
+				if err := Bot.SendPhoto(filePath, caption); err != nil {
+					log.Printf("❌ Erro no upload: %v", err)
+					IncrementFailedUploads()
+				} else {
+					IncrementTotalPhotos()
+					SetLastCapture(time.Now())
+					log.Printf("✅ Foto enviada: %s", filepath.Base(filePath))
+				}
 			}
+
+			os.Remove(filePath)
 		}
 	}
-	return state
+
+	tempDir := filepath.Join(GetBinaryDir(), "camera_captures", "temp")
+	os.RemoveAll(tempDir)
+	os.MkdirAll(tempDir, 0755)
+
+	RotateLogs()
+}
+
+func RunDaemon() {
+	config := GetConfig()
+	log.Printf("🔄 Iniciando loop de captura (intervalo: %v)", config.CaptureInterval)
+
+	ticker := time.NewTicker(config.CaptureInterval)
+	defer ticker.Stop()
+
+	DoCapture()
+
+	for range ticker.C {
+		DoCapture()
+	}
+}
+
+func RunOnce() {
+	log.Println("📸 Executando captura única...")
+	DoCapture()
+	log.Println("✅ Captura concluída")
 }

@@ -1,55 +1,16 @@
 {
-  "name": "Go Mega Power",
-
-  "build": {
-    "dockerfile": "Dockerfile"
-  },
-
-  "remoteUser": "vscode",
-
-  "updateRemoteUserUID": true,
-
-  "customizations": {
-    "vscode": {
-      "extensions": [
-        "golang.go",
-        "eamodio.gitlens",
-        "usernamehw.errorlens",
-        "fill-labs.dependi",
-        "redhat.vscode-yaml",
-        "tamasfe.even-better-toml",
-        "ms-vscode.hexeditor",
-        "streetsidesoftware.code-spell-checker",
-        "ms-azuretools.vscode-docker",
-        "humao.rest-client"
-      ],
-      "settings": {
-        "editor.formatOnSave": true,
-        "editor.codeActionsOnSave": {
-          "source.organizeImports": "explicit"
-        },
-        "editor.inlayHints.enabled": "on",
-        "go.useLanguageServer": true,
-        "go.formatTool": "gofumpt",
-        "go.lintTool": "golangci-lint",
-        "files.insertFinalNewline": true,
-        "terminal.integrated.defaultProfile.linux": "bash"
-      }
-    }
-  },
-
-  "containerEnv": {
-    "GO111MODULE": "on",
-    "CGO_ENABLED": "1",
-    "GOPROXY": "https://proxy.golang.org,direct",
-    "GOSUMDB": "sum.golang.org"
-  },
-
-  "postStartCommand": "go version",
-
-  "forwardPorts": [
-    8080,
-    3000,
-    5000
-  ]
+    "name": "termuxcam Dev Container",
+    "image": "mcr.microsoft.com/devcontainers/go:1.21",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "golang.Go",
+                "ms-azuretools.vscode-docker"
+            ]
+        }
+    },
+    "postCreateCommand": "go mod download",
+    "mounts": [
+        "source=${localWorkspaceFolder}/.env,target=/workspace/.env,type=bind"
+    ]
 }

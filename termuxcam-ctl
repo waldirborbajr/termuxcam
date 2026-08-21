@@ -1,102 +1,57 @@
 #!/bin/bash
-# =============================================
-# termuxcam - Service Control Script
-# For manual maintenance: start, stop, restart, status
-# =============================================
-
-set -euo pipefail
-
 SERVICE_NAME="termuxcam"
 SERVICE_DIR="$HOME/.termux/service/$SERVICE_NAME"
-LOG_FILE="$HOME/camera_captures/capture.log"
+VAR_SERVICE="$PREFIX/var/service/$SERVICE_NAME"
 
-usage() {
-    cat <<EOF
-Usage: $(basename "$0") {start|stop|restart|status|log}
-
-  start    Start the termuxcam service
-  stop     Stop the termuxcam service
-  restart  Restart the termuxcam service
-  status   Show current service status
-  log      Show the last 20 lines of the capture log
-
-Examples:
-  $(basename "$0") stop      # pause captures for maintenance
-  $(basename "$0") start     # resume captures
-  $(basename "$0") restart   # apply a config change without rebuilding
-EOF
-}
-
-check_prereqs() {
-    if ! command -v sv >/dev/null 2>&1; then
-        echo "❌ 'sv' command not found. Is termux-services installed and is SVDIR set?"
+case "$1" in
+    start)
+        echo "▶️ Iniciando $SERVICE_NAME..."
+        sv up $SERVICE_NAME
+        ;;
+    stop)
+        echo "⏹️ Parando $SERVICE_NAME..."
+        sv down $SERVICE_NAME
+        ;;
+    restart)
+        echo "♻️ Reiniciando $SERVICE_NAME..."
+        sv restart $SERVICE_NAME
+        ;;
+    status)
+        echo "📊 Status do $SERVICE_NAME:"
+        sv status $SERVICE_NAME
+        ;;
+    logs)
+        echo "📄 Logs do $SERVICE_NAME:"
+        tail -f ~/camera_captures/capture.log
+        ;;
+    install)
+        echo "📦 Instalando serviço $SERVICE_NAME..."
+        mkdir -p $SERVICE_DIR
+        mkdir -p $SERVICE_DIR/log
+        
+        cat > $SERVICE_DIR/run << 'RUNEOF'
+#!/data/data/com.termux/files/usr/bin/sh
+export HOME=/data/data/com.termux/files/home
+export PATH=/data/data/com.termux/files/usr/bin:$PATH
+export TG_BOT_TOKEN="${TG_BOT_TOKEN:-}"
+export TG_CHAT_ID="${TG_CHAT_ID:-}"
+exec /data/data/com.termux/files/home/bins/termuxcam start --daemon
+RUNEOF
+        chmod +x $SERVICE_DIR/run
+        
+        ln -sf $SERVICE_DIR $VAR_SERVICE
+        sv up $SERVICE_NAME
+        echo "✅ Serviço instalado e iniciado!"
+        ;;
+    uninstall)
+        echo "🗑️ Removendo serviço $SERVICE_NAME..."
+        sv down $SERVICE_NAME
+        rm -f $VAR_SERVICE
+        rm -rf $SERVICE_DIR
+        echo "✅ Serviço removido!"
+        ;;
+    *)
+        echo "Uso: $0 {start|stop|restart|status|logs|install|uninstall}"
         exit 1
-    fi
-
-    if [ ! -d "$SERVICE_DIR" ]; then
-        echo "❌ Service directory not found: $SERVICE_DIR"
-        echo "   Run the installation step first."
-        exit 1
-    fi
-}
-
-do_start() {
-    echo "▶️  Starting $SERVICE_NAME..."
-    sv up "$SERVICE_NAME"
-    sleep 1
-    sv status "$SERVICE_NAME"
-}
-
-do_stop() {
-    echo "⏹  Stopping $SERVICE_NAME..."
-    sv down "$SERVICE_NAME"
-    sleep 1
-    sv status "$SERVICE_NAME"
-}
-
-do_restart() {
-    echo "🔄 Restarting $SERVICE_NAME..."
-    sv restart "$SERVICE_NAME"
-    sleep 2
-    sv status "$SERVICE_NAME"
-}
-
-do_status() {
-    echo "📊 Status of $SERVICE_NAME:"
-    sv status "$SERVICE_NAME"
-}
-
-do_log() {
-    echo "📝 Last 20 lines of capture log:"
-    if [ -f "$LOG_FILE" ]; then
-        tail -n 20 "$LOG_FILE"
-    else
-        echo "Log file not found: $LOG_FILE"
-    fi
-}
-
-main() {
-    if [ $# -ne 1 ]; then
-        usage
-        exit 1
-    fi
-
-    case "$1" in
-        -h|--help)
-            usage
-            exit 0
-            ;;
-        start|stop|restart|status|log)
-            check_prereqs
-            "do_$1"
-            ;;
-        *)
-            echo "❌ Unknown command: $1"
-            echo ""
-            usage
-            exit 1
-            ;;
-    esac
-}
-
-main "$@"
+        ;;
+esac

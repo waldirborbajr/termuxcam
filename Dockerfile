@@ -4,16 +4,13 @@ RUN apk add --no-cache git make
 
 WORKDIR /app
 
-# Copiar apenas go.mod e go.sum primeiro (para cache)
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
-# Compilar
-RUN go build -o termuxcam main.go
+RUN go build -o termuxcam .
 
-# Imagem final
 FROM alpine:latest
 
 RUN apk add --no-cache bash curl exiftool

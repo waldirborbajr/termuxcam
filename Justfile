@@ -1,67 +1,48 @@
 default:
-    just --list
-
-# === Run & Dev ===
-dev:
-    air
-
-run:
-    go run .
+    @just --list
 
 build:
-    go build -o bin/app .
+    go build -o termuxcam .
 
-build-release:
-    go build -ldflags="-s -w" -o bin/app .
+build-all:
+    mkdir -p build
+    GOOS=linux GOARCH=amd64 go build -o build/termuxcam-linux-amd64 .
+    GOOS=linux GOARCH=arm64 go build -o build/termuxcam-linux-arm64 .
+    GOOS=android GOARCH=arm64 go build -o build/termuxcam-android-arm64 .
+    GOOS=windows GOARCH=amd64 go build -o build/termuxcam-windows-amd64.exe .
 
-# === Quality ===
-fmt:
-    gofumpt -l -w .
-
-lint:
-    golangci-lint run --fast
-
-lint-full:
-    golangci-lint run
-
-vet:
-    go vet ./...
-
-staticcheck:
-    staticcheck ./...
-
-check: fmt lint vet staticcheck
-
-# === Test ===
-test:
-    richgo test ./... -v -race
-
-test-short:
-    richgo test ./... -short
-
-coverage:
-    go test ./... -race -coverprofile=coverage.out
-    go tool cover -html=coverage.out
-
-# === Dependencies ===
-tidy:
-    go mod tidy
-
-update:
-    go get -u ./...
-    go mod tidy
-
-# === Tools ===
-install-tools:
-    go install github.com/air-verse/air@latest
-    go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-    go install mvdan.cc/gofumpt@latest
-
-# === Clean ===
 clean:
-    go clean -cache -modcache
-    rm -rf bin/
+    rm -f termuxcam
+    rm -rf build
 
-# === Full CI Check ===
-ci: check test
-    @echo "✅ All checks passed!"
+install-termux:
+    pkg update && pkg upgrade -y
+    pkg install golang git termux-api
+    go build -o ~/bins/termuxcam .
+    cp termuxcam.conf ~/bins/
+    cp .env.example ~/bins/.env
+    @echo "✅ Instalação concluída!"
+
+test:
+    go test -v ./...
+
+start:
+    ./termuxcam-ctl start
+
+stop:
+    ./termuxcam-ctl stop
+
+restart:
+    ./termuxcam-ctl restart
+
+status:
+    ./termuxcam-ctl status
+
+logs:
+    ./termuxcam-ctl logs
+
+install-service:
+    ./termuxcam-ctl install
+
+uninstall-service:
+    ./termuxcam-ctl uninstall
