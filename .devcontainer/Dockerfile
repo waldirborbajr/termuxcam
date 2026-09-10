@@ -13,7 +13,6 @@ FROM debian:bookworm AS tools
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Populado automaticamente pelo BuildKit (amd64/arm64) — sem hardcode.
 ARG TARGETARCH=amd64
 
 WORKDIR /tmp
@@ -30,12 +29,6 @@ RUN apt-get update && \
     && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod /tmp/go.mod
-
-###############################################################################
-# Resolve versão do Go: prioriza `toolchain goX.Y.Z` (pin exato); se só
-# houver `go X.Y` (sem patch) no go.mod, resolve o último patch estável
-# via API oficial do go.dev.
-###############################################################################
 
 RUN set -eux; \
     TOOLCHAIN_LINE="$(grep -E '^toolchain[[:space:]]+go[0-9]' /tmp/go.mod || true)"; \
@@ -78,21 +71,29 @@ ENV GO111MODULE=on \
 RUN mkdir -p "${GOBIN}"
 
 ###############################################################################
-# Ferramentas com BINÁRIO pré-compilado oficial (evita compilar árvores
-# de dependência grandes — golangci-lint em especial é conhecido por ser
-# lento via `go install` por causa dos dezenas de linters embutidos).
+# golangci-lint: versão pinada (não "latest") para evitar pegar uma release
+# recém-publicada com checksum/CDN ainda dessincronizado. Se o script de
+# binário mesmo assim falhar (problema já visto: raw.githubusercontent.com
+# e GitHub Releases CDN saem de sincronia por alguns minutos após o
+# publish), cai para `go install` como fallback — mais lento, mas robusto.
 ###############################################################################
 
-RUN curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-        | sh -s -- -b "${GOBIN}" \
-    && curl -sSfL https://raw.githubusercontent.com/air-verse/air/master/install.sh \
+ARG GOLANGCI_LINT_VERSION=v2.13.1
+
+RUN set -eux; \
+    if curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+        | sh -s -- -b "${GOBIN}" "${GOLANGCI_LINT_VERSION}"; then \
+        echo "golangci-lint instalado via binário (${GOLANGCI_LINT_VERSION})"; \
+    else \
+        echo "Script de binário falhou (provável mismatch de checksum/CDN) — usando go install como fallback"; \
+        GOFLAGS=-mod=mod go install "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@${GOLANGCI_LINT_VERSION}"; \
+    fi
+
+RUN curl -sSfL https://raw.githubusercontent.com/air-verse/air/master/install.sh \
         | sh -s -- -b "${GOBIN}"
 
 ###############################################################################
 # Ferramentas sem binário oficial publicado — compiladas via `go install`.
-# Isso é aceitável no Go (diferente do Rust): o compilador é rápido e essas
-# ferramentas são pequenas; com o cache de módulos/build abaixo, leva
-# segundos, não minutos.
 ###############################################################################
 
 RUN --mount=type=cache,target=/root/go/pkg/mod \
@@ -147,7 +148,6 @@ RUN apt-get update && \
         htop \
         lsof \
     && rm -rf /var/lib/apt/lists/* \
-    # Debian nomeia diferente — cria os aliases de comando esperados.
     && ln -s /usr/bin/fdfind /usr/local/bin/fd \
     && ln -s /usr/bin/batcat /usr/local/bin/bat
 
@@ -176,9 +176,6 @@ ENV GO111MODULE=on \
     GOPROXY=https://proxy.golang.org,direct \
     GOSUMDB=sum.golang.org
 
-# Pastas de cache do usuário vscode, já com dono certo — é nelas que os
-# volumes do devcontainer.json vão montar (senão o cache do `go mod
-# download` evapora a cada rebuild do container).
 RUN mkdir -p /home/vscode/go/pkg/mod /home/vscode/.cache/go-build \
     && chown -R vscode:vscode /home/vscode/go /home/vscode/.cache
 
