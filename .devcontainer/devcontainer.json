@@ -6,27 +6,45 @@
         "context": ".."
     },
 
+    "hostRequirements": {
+        "cpus": 4,
+        "memory": "8gb",
+        "storage": "32gb"
+    },
+
     "remoteUser": "vscode",
 
     "customizations": {
         "vscode": {
             "extensions": [
                 "golang.Go",
-                "ms-azuretools.vscode-docker"
+                "ms-azuretools.vscode-docker",
+                "eamodio.gitlens",
+                "usernamehw.errorlens",
+                "streetsidesoftware.code-spell-checker",
+                "github.vscode-github-actions"
             ],
             "settings": {
                 "go.useLanguageServer": true,
                 "go.toolsManagement.autoUpdate": false,
+                "go.toolsManagement.checkForUpdates": "off",
                 "go.lintOnSave": "package",
                 "go.formatTool": "gofumpt",
-                "go.lintTool": "golangci-lint"
+                "go.lintTool": "golangci-lint",
+                "editor.formatOnSave": true,
+                "[go]": {
+                    "editor.formatOnSave": true,
+                    "editor.defaultFormatter": "golang.go"
+                }
             }
         }
     },
 
+    "onCreateCommand": "go version",
     "postCreateCommand": "go mod download",
 
     "mounts": [
-        "source=${localWorkspaceFolder}/.env,target=/workspace/.env,type=bind"
+        "source=${localWorkspaceFolderBasename}-go-mod-cache,target=/home/vscode/go/pkg/mod,type=volume",
+        "source=${localWorkspaceFolderBasename}-go-build-cache,target=/home/vscode/.cache/go-build,type=volume"
     ]
 }
