@@ -53,6 +53,13 @@ func GetBinaryDir() string {
 	return filepath.Dir(execPath)
 }
 
+func resolveBinaryPath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(GetBinaryDir(), path)
+}
+
 func IncrementErrorCount() {
 	stateMu.Lock()
 	defer stateMu.Unlock()

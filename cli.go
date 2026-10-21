@@ -10,35 +10,38 @@ import (
 )
 
 var CLI struct {
-	Start   StartCmd   `cmd:"" help:"Iniciar o serviço de captura"`
-	Status  StatusCmd  `cmd:"" help:"Exibir status do serviço"`
-	Config  ConfigCmd  `cmd:"" help:"Gerenciar configuração"`
-	Capture CaptureCmd `cmd:"" help:"Executar captura manual"`
-	Torch   TorchCmd   `cmd:"" help:"Ligar ou desligar a lanterna"`
-	System  SystemCmd  `cmd:"" help:"Exibir informações do sistema"`
-	Version VersionCmd `cmd:"" help:"Exibir versão"`
+	Start   StartCmd   `cmd:"" help:"Start the capture service"`
+	Status  StatusCmd  `cmd:"" help:"Show service status"`
+	Config  ConfigCmd  `cmd:"" help:"Manage configuration"`
+	Capture CaptureCmd `cmd:"" help:"Capture photos manually"`
+	Torch   TorchCmd   `cmd:"" help:"Turn the flashlight on or off"`
+	System  SystemCmd  `cmd:"" help:"Show system information"`
+	Version VersionCmd `cmd:"" help:"Show version"`
 
-	Debug      bool   `help:"Ativar modo debug"`
-	LogFile    string `help:"Arquivo de log" default:"camera_captures/capture.log"`
-	ConfigFile string `help:"Arquivo de configuração" default:"termuxcam.conf"`
-	EnvFile    string `help:"Arquivo .env" default:".env"`
+	Debug      bool   `help:"Enable debug mode"`
+	LogFile    string `help:"Log file path" default:"camera_captures/capture.log"`
+	ConfigFile string `help:"Configuration file path" default:"termuxcam.conf"`
+	EnvFile    string `help:"Environment file path" default:".env"`
 }
 
 type StartCmd struct {
-	Daemon bool `help:"Executar como daemon (serviço)"`
-	Port   int  `help:"Porta para API HTTP" default:"8080"`
+	Daemon bool `help:"Run as a daemon service"`
+	Port   int  `help:"HTTP API port" default:"8080"`
 }
 
 func (s *StartCmd) Run(ctx *kong.Context) error {
-	log.Println("🚀 Iniciando termuxcam...")
+	log.Println("Starting termuxcam...")
 
-	if err := LoadEnvFile(CLI.EnvFile); err != nil {
-		log.Printf("⚠️ Erro ao carregar .env: %v", err)
+	if err := LoadEnvFile(resolveBinaryPath(CLI.EnvFile)); err != nil {
+		log.Printf("Failed to load environment file: %v", err)
 	}
 
-	if err := LoadConfig(CLI.ConfigFile); err != nil {
-		log.Printf("⚠️ Erro ao carregar configuração: %v", err)
+	if err := LoadConfig(resolveBinaryPath(CLI.ConfigFile)); err != nil {
+		log.Printf("Failed to load configuration: %v", err)
 	}
+	config := GetConfig()
+	log.Printf("Config loaded -> interval=%s | cameraMode=%d | burst=%d | config=%s",
+		config.CaptureInterval, config.CameraMode, config.BurstCount, resolveBinaryPath(CLI.ConfigFile))
 
 	InitBot()
 
@@ -64,14 +67,14 @@ func (s *StatusCmd) Run(ctx *kong.Context) error {
 }
 
 type ConfigCmd struct {
-	Get    bool   `help:"Exibir configuração atual"`
-	Set    string `help:"Definir configuração (formato: chave=valor)"`
-	Reload bool   `help:"Recarregar configuração do arquivo"`
+	Get    bool   `help:"Show the current configuration"`
+	Set    string `help:"Set a configuration value (key=value)"`
+	Reload bool   `help:"Reload configuration from file"`
 }
 
 func (c *ConfigCmd) Run(ctx *kong.Context) error {
 	if c.Reload {
-		return LoadConfig(CLI.ConfigFile)
+		return LoadConfig(resolveBinaryPath(CLI.ConfigFile))
 	}
 
 	if c.Set != "" {
@@ -83,11 +86,18 @@ func (c *ConfigCmd) Run(ctx *kong.Context) error {
 }
 
 type CaptureCmd struct {
-	Camera int `help:"ID da câmera (0=traseira, 1=frontal)" default:"-1"`
-	Burst  int `help:"Número de fotos" default:"1"`
+	Camera int `help:"Camera ID (0=back, 1=front)" default:"-1"`
+	Burst  int `help:"Number of photos" default:"1"`
 }
 
 func (c *CaptureCmd) Run(ctx *kong.Context) error {
+	if c.Camera < -1 || c.Camera > 1 {
+		return fmt.Errorf("camera must be -1 (front/default), 0 (back), or 1 (front)")
+	}
+	if c.Burst < 1 || c.Burst > 5 {
+		return fmt.Errorf("burst count must be between 1 and 5")
+	}
+
 	cameraID := FrontCameraHWID
 	if c.Camera == 0 {
 		cameraID = BackCameraHWID
@@ -95,10 +105,10 @@ func (c *CaptureCmd) Run(ctx *kong.Context) error {
 
 	files, err := CaptureBurst(cameraID, c.Burst)
 	if err != nil {
-		return fmt.Errorf("erro na captura: %w", err)
+		return fmt.Errorf("capture failed: %w", err)
 	}
 
-	fmt.Printf("✅ Capturadas %d foto(s)\n", len(files))
+	fmt.Printf("✅ Captured %d photo(s)\n", len(files))
 	for _, f := range files {
 		fmt.Printf("  📸 %s\n", f)
 	}
@@ -106,22 +116,19 @@ func (c *CaptureCmd) Run(ctx *kong.Context) error {
 }
 
 type TorchCmd struct {
-	State string `arg:"" enum:"on,off" help:"Ação para a lanterna (on ou off)"`
+	State string `arg:"" enum:"on,off" help:"Flashlight action (on or off)"`
 }
 
 func (t *TorchCmd) Run(ctx *kong.Context) error {
 	output, err := exec.Command("termux-torch", t.State).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("erro ao %s a lanterna: %w (%s)", map[string]string{
-			"on":  "ligar",
-			"off": "desligar",
-		}[t.State], err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("failed to turn flashlight %s: %w (%s)", t.State, err, strings.TrimSpace(string(output)))
 	}
 
 	if t.State == "on" {
-		fmt.Println("Lanterna ligada")
+		fmt.Println("Flashlight turned on")
 	} else {
-		fmt.Println("Lanterna desligada")
+		fmt.Println("Flashlight turned off")
 	}
 	return nil
 }
@@ -137,6 +144,6 @@ type VersionCmd struct{}
 
 func (v *VersionCmd) Run(ctx *kong.Context) error {
 	fmt.Println("termuxcam v1.0.0")
-	fmt.Println("GO project to access frontal camera from termux")
+	fmt.Println("Go project for camera capture in Termux")
 	return nil
 }

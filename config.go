@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +24,7 @@ type Config struct {
 	EncryptionKey   string
 }
 
-func LoadConfig(configFile string) error {
+func LoadConfig(configFile string) (returnErr error) {
 	ConfigMu.Lock()
 	defer ConfigMu.Unlock()
 
@@ -35,9 +37,16 @@ func LoadConfig(configFile string) error {
 
 	file, err := os.Open(configFile)
 	if err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); returnErr == nil && closeErr != nil {
+			returnErr = closeErr
+		}
+	}()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -62,23 +71,26 @@ func LoadConfig(configFile string) error {
 				}
 			}
 		case "camera":
-			var mode int
-			if _, err := fmt.Sscanf(value, "%d", &mode); err == nil && mode >= 0 && mode <= 2 {
+			mode, err := strconv.Atoi(value)
+			if err == nil && mode >= 0 && mode <= 2 {
 				AppConfig.CameraMode = mode
 			}
 		case "burst":
-			var count int
-			if _, err := fmt.Sscanf(value, "%d", &count); err == nil && count >= 1 && count <= 5 {
+			count, err := strconv.Atoi(value)
+			if err == nil && count >= 1 && count <= 5 {
 				AppConfig.BurstCount = count
 			}
 		case "logs_days":
-			var days int
-			if _, err := fmt.Sscanf(value, "%d", &days); err == nil && days >= 1 && days <= 30 {
+			days, err := strconv.Atoi(value)
+			if err == nil && days >= 1 && days <= 30 {
 				AppConfig.KeepLogsDays = days
 			}
 		case "encryption_key":
 			AppConfig.EncryptionKey = value
 		}
+	}
+	if key := os.Getenv("ENCRYPTION_KEY"); key != "" {
+		AppConfig.EncryptionKey = key
 	}
 
 	return scanner.Err()
@@ -93,7 +105,7 @@ func GetConfig() Config {
 func SetConfigValue(setting string) error {
 	parts := strings.SplitN(setting, "=", 2)
 	if len(parts) != 2 {
-		return fmt.Errorf("formato inválido, use: chave=valor")
+		return fmt.Errorf("invalid format; use key=value")
 	}
 
 	key := strings.TrimSpace(parts[0])
@@ -104,38 +116,38 @@ func SetConfigValue(setting string) error {
 
 	switch key {
 	case "camera":
-		var mode int
-		if _, err := fmt.Sscanf(value, "%d", &mode); err != nil || mode < 0 || mode > 2 {
-			return fmt.Errorf("camera deve ser 0, 1 ou 2")
+		mode, err := strconv.Atoi(value)
+		if err != nil || mode < 0 || mode > 2 {
+			return fmt.Errorf("camera must be 0, 1, or 2")
 		}
 		AppConfig.CameraMode = mode
-	case "interval":
+	case "capture", "interval":
 		dur, err := time.ParseDuration(value)
 		if err != nil || dur < time.Minute || dur > 24*time.Hour {
-			return fmt.Errorf("intervalo inválido (1min-24h)")
+			return fmt.Errorf("invalid interval (1m-24h)")
 		}
 		AppConfig.CaptureInterval = dur
 	case "burst":
-		var count int
-		if _, err := fmt.Sscanf(value, "%d", &count); err != nil || count < 1 || count > 5 {
-			return fmt.Errorf("burst deve ser entre 1 e 5")
+		count, err := strconv.Atoi(value)
+		if err != nil || count < 1 || count > 5 {
+			return fmt.Errorf("burst must be between 1 and 5")
 		}
 		AppConfig.BurstCount = count
 	case "logs_days":
-		var days int
-		if _, err := fmt.Sscanf(value, "%d", &days); err != nil || days < 1 || days > 30 {
-			return fmt.Errorf("logs_days deve ser entre 1 e 30")
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 1 || days > 30 {
+			return fmt.Errorf("logs_days must be between 1 and 30")
 		}
 		AppConfig.KeepLogsDays = days
 	default:
-		return fmt.Errorf("chave desconhecida: %s", key)
+		return fmt.Errorf("unknown setting: %s", key)
 	}
 
 	return SaveConfig()
 }
 
 func SaveConfig() error {
-	content := fmt.Sprintf(`# Configuração termuxcam
+	content := fmt.Sprintf(`# termuxcam configuration
 capture=%s
 camera=%d
 burst=%d
@@ -146,15 +158,23 @@ logs_days=%d
 		content += fmt.Sprintf("encryption_key=%s\n", AppConfig.EncryptionKey)
 	}
 
-	return os.WriteFile(CLI.ConfigFile, []byte(content), 0644)
+	configPath := resolveBinaryPath(CLI.ConfigFile)
+	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
+		return err
+	}
+	return os.Chmod(configPath, 0600)
 }
 
-func LoadEnvFile(envPath string) error {
+func LoadEnvFile(envPath string) (returnErr error) {
 	file, err := os.Open(envPath)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); returnErr == nil && closeErr != nil {
+			returnErr = closeErr
+		}
+	}()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -170,7 +190,11 @@ func LoadEnvFile(envPath string) error {
 
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
-		os.Setenv(key, value)
+		if _, exists := os.LookupEnv(key); !exists {
+			if err := os.Setenv(key, value); err != nil {
+				return err
+			}
+		}
 	}
 
 	return scanner.Err()

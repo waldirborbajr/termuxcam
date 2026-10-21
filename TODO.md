@@ -1,71 +1,64 @@
-# 📋 TODO List - termuxcam
+# termuxcam TODO
 
-**Versão atual:** 0.1.1  
-**Objetivo:** Sistema de câmera resiliente, eficiente e monitorável via Telegram no Termux.
-
----
-
-## ✅ Concluído
-
-- [x] Captura periódica com `termux-camera-photo`
-- [x] Envio via Telegram (`sendPhoto`)
-- [x] Detecção de movimento via perceptual hash (dHash)
-- [x] Heartbeat (envio periódico mesmo sem movimento)
-- [x] Configurável via `termuxcam.conf`
-- [x] Persistência de estado (`motion_state.json`)
-- [x] Wake-lock para não dormir
-- [x] Comando `/status` rico com métricas do sistema
-- [x] Comandos `/help`, `/log`, `/restart`
-- [x] Reset automático de contadores diários à meia-noite
+**Current version:** 1.0.0
+**Goal:** A resilient, efficient, and observable camera service for Termux, managed through Telegram.
 
 ---
 
-## 🔄 Prioridades Atuais (Próximos passos)
+## Implemented
 
-### 1. Estabilidade e Resiliência (Alta prioridade)
-- [ ] **Sistema de Retry com fila**  
-  → Tentativa automática de reenvio de fotos que falharam no upload antes de capturar nova imagem.
-- [ ] **Limpeza automática de disco**  
-  → Rotacionar/deletar arquivos antigos quando a pasta `camera_captures` atingir limite (ex: 2GB ou 7 dias).
-- [x] **Hot-reload da configuração**  
-  → Recarregar `termuxcam.conf` via SIGHUP sem reiniciar o processo.
-- [ ] **Melhor tratamento de erros**  
-  → Notificação no Telegram quando houver falhas repetidas.
-
-### 2. Inteligência e Detecção (Média/Alta)
-- [ ] Detecção avançada de eventos (pessoa, animal, vidro quebrando, etc) usando modelo leve (TFLite ou Python + YOLO)
-- [ ] Detecção de som (microfone) para disparar captura
-- [ ] Notificação com foto + descrição do evento (ex: "Pessoa detectada")
-
-### 3. Monitoramento e Observabilidade
-- [ ] Dashboard web local (Go + HTML) com status em tempo real
-- [ ] Monitoramento de hosts via Tailscale (notificar se algum cair)
-- [ ] Logging estruturado + opção de envio de logs para Telegram
-- [ ] Métricas exportáveis (Prometheus format)
-
-### 4. Qualidade de Vida e Manutenção
-- [ ] Suporte a múltiplos chats/telegram (grupos + usuários)
-- [x] Comando `/photo` para tirar foto manualmente
-- [x] Comando `/config` para ver configurações atuais
-- [ ] Versão automática + check de atualização
-- [ ] Nix-on-droid + configuração declarativa (SOPS para tokens)
-- [ ] Testes unitários e integração básicos
-
-### 5. Ideias Avançadas / Futuras
-- [ ] Modo "low power" com intervalos maiores quando sem movimento
-- [ ] Gravação de vídeo curto ao detectar movimento
-- [ ] Integração com Home Assistant ou MQTT
-- [ ] Sensor fusion (acelerômetro + câmera + som)
-- [ ] Modo "stealth" (sem LED da câmera)
+- [x] Periodic capture with `termux-camera-photo`
+- [x] Telegram photo upload (`sendPhoto`)
+- [x] Configuration through `termuxcam.conf`
+- [x] In-memory status counters and uptime
+- [x] CLI commands for status, configuration, manual capture, and flashlight control
+- [ ] Motion detection, heartbeat notifications, and persistent state
+- [ ] Telegram chat commands and daily counter reset
 
 ---
 
-## Notas
+## Current Priorities
 
-- **Prioridade atual:** Focar primeiro em **Retry + Limpeza de disco** para tornar o sistema realmente confiável.
-- **Próximo grande passo técnico:** Integração com modelo de visão computacional.
-- **Meta de estabilidade:** Conseguir rodar por semanas sem intervenção manual.
+### 1. Stability and resilience (high priority)
+- [ ] **Retry queue**: Retry failed photo uploads before capturing a new image.
+- [ ] **Automatic disk cleanup**: Rotate or delete old files when `camera_captures` reaches a limit (for example, 2 GB or 7 days).
+- [ ] **Configuration hot reload**: Reload `termuxcam.conf` on SIGHUP without restarting the process.
+- [ ] **Improved error handling**: Notify Telegram after repeated failures.
+
+### 2. Intelligence and detection (medium/high priority)
+- [ ] Advanced event detection (people, animals, broken glass, etc.) with a lightweight model (TFLite or Python + YOLO)
+- [ ] Sound detection to trigger a capture
+- [ ] Photo notifications with an event description (for example, "Person detected")
+
+### 3. Monitoring and observability
+- [ ] Local web dashboard (Go + HTML) with real-time status
+- [ ] Tailscale host monitoring with notifications when a host goes offline
+- [ ] Structured logging and optional Telegram log delivery
+- [ ] Exportable Prometheus metrics
+
+### 4. Quality of life and maintenance
+- [ ] Support multiple Telegram chats (groups and users)
+- [x] `capture` command for manual photo capture
+- [x] `config` command to view and update configuration
+- [ ] Automatic versioning and update checks
+- [ ] Nix-on-Droid and declarative configuration (SOPS for tokens)
+- [ ] Basic unit and integration tests
+
+### 5. Future ideas
+- [ ] Low-power mode with longer intervals when no motion is detected
+- [ ] Short video recording when motion is detected
+- [ ] Home Assistant or MQTT integration
+- [ ] Sensor fusion (accelerometer, camera, and sound)
+- [ ] Stealth mode (camera LED disabled)
 
 ---
 
-**Última atualização:** 15 de julho de 2026
+## Notes
+
+- **Current priority:** Start with **retry queue + disk cleanup** to improve reliability.
+- **Next major technical step:** Integrate a computer vision model.
+- **Stability target:** Run for weeks without manual intervention.
+
+---
+
+**Last updated:** October 21, 2026

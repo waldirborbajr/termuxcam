@@ -154,21 +154,18 @@ Example output:
 ]
 ```
 
-`main.go` keeps these as two clearly labeled constants near the top of
-the file, decoupled from everything else in the program:
+`capture.go` keeps these as two clearly labeled constants near the top
+of the file:
 
 ```go
 const (
-	frontCameraHWID = "1"
-	backCameraHWID  = "0"
+	FrontCameraHWID = "1"
+	BackCameraHWID  = "0"
 )
 ```
 
 If your device reports different IDs than the example above, edit
-these two constants before building (step 7) — nothing else in the
-code needs to change, since the rest of the program only ever refers
-to cameras by the semantic labels `"front"` / `"back"`, never by raw
-ID.
+these two constants before building (step 7).
 
 ------------------------------------------------------------------------
 
@@ -236,16 +233,11 @@ Create a binary directory:
 mkdir -p ~/bins
 ```
 
-Build:
+Build all Go source files in the module:
 
 ```sh
-go build -o ~/bins/termuxcam main.go
+go build -o ~/bins/termuxcam .
 ```
-
-> Note: the project is a single `main.go` file — there is no separate
-> `context.go` to pass to `go build`. If your local copy still has one
-> left over from an earlier version, it's unused dead code and safe to
-> delete (`rm context.go`).
 
 Verify:
 
@@ -257,39 +249,32 @@ ls -lh ~/bins/termuxcam
 
 # 8. Configure: `termuxcam.conf`
 
-`termuxcam` reads its settings from a `termuxcam.conf` file placed
-**in the same directory as the binary** (`~/bins/`, if you followed
-step 7 as-is). This lets you change the capture interval or which
-camera(s) to use without recompiling.
+`termuxcam` reads `termuxcam.conf` from the binary's directory by
+default (`~/bins/`, if you followed step 7). This lets you change the
+capture interval or camera selection without recompiling. Use
+`--config-file` to select a different path.
 
-If the file doesn't exist yet, the app creates a default one
-automatically on first run — you don't have to create it by hand. To
-set it up ahead of time instead:
+The application uses built-in defaults if the file is missing, but it
+does not create the file automatically. Copy the sample files:
 
 ```sh
-cat <<'EOF' > ~/bins/termuxcam.conf
-# termuxcam configuration
-
-# Capture interval — a number followed by 'm' (minutes) or 'h' (hours)
-# capture=15m   capture=45m   capture=2h   capture=3h
-capture=5m
-
-# Camera mode:
-#   0 = back only
-#   1 = front only (default)
-#   2 = both (captures and uploads one photo from each camera per cycle)
-camera=1
-EOF
+cp -n termuxcam.conf ~/bins/termuxcam.conf
+cp -n .env.example ~/bins/.env
+chmod 600 ~/bins/.env
 ```
+
+Edit `~/bins/.env` and set `TG_BOT_TOKEN` and `TG_CHAT_ID` before
+starting the capture service.
 
 | Setting | Accepted values | Notes |
 |---|---|---|
-| `capture` | `<number>m` or `<number>h` | Clamped to a safe range: 1 minute minimum, 24 hours maximum. Out-of-range or malformed values are ignored and the previous/default value is kept, with a warning in the log. |
-| `camera` | `0`, `1`, or `2` | `0`=back, `1`=front, `2`=both. Anything else is ignored and the previous/default value is kept, with a warning in the log. |
+| `capture` | Go duration such as `5m` or `1h` | Accepted range: 1 minute to 24 hours. Invalid values leave the previous/default value unchanged. |
+| `camera` | `0`, `1`, or `2` | `0`=back, `1`=front, `2`=both. Invalid values leave the previous/default value unchanged. |
+| `burst` | `1` to `5` | Number of photos per capture cycle. |
+| `logs_days` | `1` to `30` | Retention period for rotated logs. |
 
-Inline comments are supported (`capture=3h  # every 3 hours`), and
-malformed or unknown lines are skipped with a warning rather than
-crashing the app.
+Full-line comments start with `#`. Malformed and unknown lines are
+ignored.
 
 **Editing the config while the service is running:** changes only take
 effect after a restart — the file is read once at startup, not
@@ -307,11 +292,11 @@ sv restart termuxcam
 export TG_BOT_TOKEN="YOUR_TOKEN"
 export TG_CHAT_ID="YOUR_CHAT_ID"
 
-~/bins/termuxcam
+~/bins/termuxcam start
 ```
 
 Confirm the photo (or photos, if `camera=2`) arrives in Telegram with
-the expected caption (`Front camera: ...` / `Back camera: ...`), then
+the expected caption (`Front camera` / `Back camera`), then
 `Ctrl+C` to stop.
 
 Control the flashlight from the command line with:
@@ -368,15 +353,14 @@ mkdir -p ~/.termux/service/termuxcam/log
 cat <<'EOF' > ~/.termux/service/termuxcam/run
 #!/data/data/com.termux/files/usr/bin/sh
 
-# HOME must be set explicitly — processes started by runit do not
-# inherit your interactive shell's environment.
+# Processes started by runit do not inherit your interactive shell's
+# environment.
 export HOME=/data/data/com.termux/files/home
 export PATH=/data/data/com.termux/files/usr/bin:$PATH
 
-export TG_BOT_TOKEN="YOUR_TOKEN"
-export TG_CHAT_ID="YOUR_CHAT_ID"
-
-exec /data/data/com.termux/files/home/bins/termuxcam
+exec "$HOME/bins/termuxcam" start --daemon \
+  --config-file "$HOME/bins/termuxcam.conf" \
+  --env-file "$HOME/bins/.env"
 EOF
 ```
 
@@ -393,7 +377,7 @@ chmod +x ~/.termux/service/termuxcam/run
 Create the symbolic link used by `runit`:
 
 ```sh
-ln -s ~/.termux/service/termuxcam $PREFIX/var/service/termuxcam
+ln -sfn ~/.termux/service/termuxcam $PREFIX/var/service/termuxcam
 ```
 
 Verify:
@@ -427,16 +411,16 @@ sv status termuxcam
 ## 11.5 Monitor Logs
 
 Application log (includes the loaded config on every startup, e.g.
-`Config loaded -> interval=3h | cameraMode=2 -> front(hw=1), back(hw=0) | config=...`):
+`Config loaded -> interval=5m0s | cameraMode=1 | burst=1 | config=...`):
 
 ```sh
-tail -f ~/camera_captures/capture.log
+tail -f ~/bins/camera_captures/capture.log
 ```
 
 Service output:
 
 ```sh
-tail -f ~/.termux/var/service/termuxcam/log/main/current
+tail -f "$PREFIX/var/service/termuxcam/log/main/current"
 ```
 
 If the application log never updates even though `sv status` shows the
@@ -462,13 +446,10 @@ echo "exit code: $?"
 
 ## Captured files exist but are 0 bytes
 
-The capture was killed mid-write by the timeout before
-`termux-camera-photo` finished writing the file — typically on the
-first call after Termux:API's background process was woken from a cold
-state, which can take longer than expected. `main.go` uses a
-45-second `captureTimeout` and automatically discards and deletes any
-file that ends up empty, so this shouldn't recur; if it still does,
-increase `captureTimeout` in `main.go` and rebuild.
+The capture may have timed out before `termux-camera-photo` finished
+writing the file. `capture.go` enforces a 45-second timeout and
+discards empty files. If captures routinely need longer, adjust
+`CaptureTimeout` in `capture.go` and rebuild.
 
 Clean up any pre-existing empty files:
 
@@ -479,11 +460,9 @@ find ~/bins/camera_captures -name "*.jpg" -size 0 -delete
 ## Photos are labeled with the wrong camera, or `camera=1` captures the wrong physical camera
 
 This means the two hardware ID constants don't match your device. Redo
-step 3 (`termux-camera-info`) and confirm `frontCameraHWID` /
-`backCameraHWID` in `main.go` match what your device actually reports,
-then rebuild. The rest of the program only works with the semantic
-`"front"`/`"back"` labels, so fixing these two constants is the only
-change needed.
+step 3 (`termux-camera-info`) and confirm `FrontCameraHWID` /
+`BackCameraHWID` in `capture.go` match what your device actually
+reports, then rebuild.
 
 ## termux-camera-photo executable not found
 
@@ -560,7 +539,7 @@ sv up termuxcam
 Recreate the symbolic link:
 
 ```sh
-ln -s ~/.termux/service/termuxcam $PREFIX/var/service/termuxcam
+ln -sfn ~/.termux/service/termuxcam $PREFIX/var/service/termuxcam
 sv up termuxcam
 ```
 
@@ -607,12 +586,12 @@ On MIUI (Xiaomi) devices, this alone is often not enough — also check:
 - Camera mode: `0`=back, `1`=front, `2`=both (captures and uploads a
   separate photo per camera each cycle)
 - Physical hardware camera IDs are isolated in two constants in
-  `main.go` and are device-specific — verify with `termux-camera-info`
+  `capture.go` and are device-specific — verify with `termux-camera-info`
 - Discards and deletes any capture that comes back as a 0-byte file
 - Uploads using the Telegram Bot API, with a caption identifying the
   camera and timestamp
-- Deletes files only after successful upload; keeps them locally on
-  upload failure for manual retry
+- Deletes photos after successful upload; retains failed uploads under
+  `camera_captures/failed/` for manual retry
 - Uses Termux wake lock (skipped gracefully with a log warning if
   `termux-wake-lock` isn't available)
 - All output (photos, log) lives in `camera_captures/` next to the

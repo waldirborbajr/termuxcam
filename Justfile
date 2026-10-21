@@ -17,11 +17,13 @@ clean:
 
 install-termux:
     pkg update && pkg upgrade -y
-    pkg install golang git termux-api
-    go build -o ~/bins/termuxcam .
-    cp termuxcam.conf ~/bins/
-    cp .env.example ~/bins/.env
-    @echo "✅ Instalação concluída!"
+    pkg install golang git termux-api termux-services
+    mkdir -p "$HOME/bins"
+    go build -o "$HOME/bins/termuxcam" .
+    if [ ! -f "$HOME/bins/termuxcam.conf" ]; then cp termuxcam.conf "$HOME/bins/termuxcam.conf"; fi
+    if [ ! -f "$HOME/bins/.env" ]; then cp .env.example "$HOME/bins/.env"; fi
+    chmod 600 "$HOME/bins/.env"
+    @echo "Installation complete. Review ~/bins/.env before starting the service."
 
 test:
     go test -v ./...
