@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"os/exec"
+	"strings"
 
 	"github.com/alecthomas/kong"
 )
@@ -12,6 +14,7 @@ var CLI struct {
 	Status  StatusCmd  `cmd:"" help:"Exibir status do serviço"`
 	Config  ConfigCmd  `cmd:"" help:"Gerenciar configuração"`
 	Capture CaptureCmd `cmd:"" help:"Executar captura manual"`
+	Torch   TorchCmd   `cmd:"" help:"Ligar ou desligar a lanterna"`
 	System  SystemCmd  `cmd:"" help:"Exibir informações do sistema"`
 	Version VersionCmd `cmd:"" help:"Exibir versão"`
 
@@ -98,6 +101,27 @@ func (c *CaptureCmd) Run(ctx *kong.Context) error {
 	fmt.Printf("✅ Capturadas %d foto(s)\n", len(files))
 	for _, f := range files {
 		fmt.Printf("  📸 %s\n", f)
+	}
+	return nil
+}
+
+type TorchCmd struct {
+	State string `arg:"" enum:"on,off" help:"Ação para a lanterna (on ou off)"`
+}
+
+func (t *TorchCmd) Run(ctx *kong.Context) error {
+	output, err := exec.Command("termux-torch", t.State).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("erro ao %s a lanterna: %w (%s)", map[string]string{
+			"on":  "ligar",
+			"off": "desligar",
+		}[t.State], err, strings.TrimSpace(string(output)))
+	}
+
+	if t.State == "on" {
+		fmt.Println("Lanterna ligada")
+	} else {
+		fmt.Println("Lanterna desligada")
 	}
 	return nil
 }

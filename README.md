@@ -68,7 +68,7 @@ Both components are required:
 
 | Component | Purpose |
 |---|---|
-| `termux-api` package | Provides commands like `termux-camera-photo` |
+| `termux-api` package | Provides commands like `termux-camera-photo` and `termux-torch` |
 | Termux:API Android app | Provides Android hardware access and permissions |
 
 Open the Termux:API application once (it has no real UI — opening it
@@ -313,6 +313,16 @@ export TG_CHAT_ID="YOUR_CHAT_ID"
 Confirm the photo (or photos, if `camera=2`) arrives in Telegram with
 the expected caption (`Front camera: ...` / `Back camera: ...`), then
 `Ctrl+C` to stop.
+
+Control the flashlight from the command line with:
+
+```sh
+~/bins/termuxcam torch on
+~/bins/termuxcam torch off
+```
+
+The `torch` command requires the `termux-api` package and the Termux:API
+Android application to be installed.
 
 **Do not skip this step.** If capture or upload fails here, fix it
 before wrapping it in a service — a failing service only hides the
