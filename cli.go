@@ -44,6 +44,7 @@ func (s *StartCmd) Run(ctx *kong.Context) error {
 		config.CaptureInterval, config.CameraMode, config.BurstCount, resolveBinaryPath(CLI.ConfigFile))
 
 	InitBot()
+	StartTelegramPoller()
 
 	if s.Port > 0 {
 		go StartAPIServer(s.Port)

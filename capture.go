@@ -64,6 +64,8 @@ func CaptureBurst(cameraID string, count int) ([]string, error) {
 }
 
 func DoCapture() {
+	captureMu.Lock()
+	defer captureMu.Unlock()
 	log.Println("Starting capture cycle...")
 
 	config := GetConfig()
