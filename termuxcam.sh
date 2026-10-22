@@ -1,7 +1,7 @@
 #!/bin/sh
 # Start, stop, restart and inspect the termuxcam capture daemon.
-# The binary lives in the Termux home directory; config and runtime files
-# default to the bins directory.
+# The binary and configuration live in the Termux home directory; runtime
+# files default to the bins directory.
 # Override paths with TERMUXCAM_DIR, TERMUXCAM_BIN, TERMUXCAM_CONFIG,
 # TERMUXCAM_ENV, TERMUXCAM_LOG and TERMUXCAM_PIDFILE. TERMUXCAM_PORT
 # controls the HTTP API port (set to 0 to disable the API).
@@ -10,7 +10,7 @@ set -eu
 
 DIR="${TERMUXCAM_DIR:-$HOME/bins}"
 BIN="${TERMUXCAM_BIN:-$HOME/termuxcam}"
-CONFIG="${TERMUXCAM_CONFIG:-$DIR/termuxcam.conf}"
+CONFIG="${TERMUXCAM_CONFIG:-$HOME/termuxcam.conf}"
 ENV_FILE="${TERMUXCAM_ENV:-$DIR/.env}"
 LOG="${TERMUXCAM_LOG:-$DIR/camera_captures/capture.log}"
 PIDFILE="${TERMUXCAM_PIDFILE:-$DIR/termuxcam.pid}"
