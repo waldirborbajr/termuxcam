@@ -315,7 +315,28 @@ error in a log file instead of showing it directly in your terminal.
 
 ------------------------------------------------------------------------
 
-# 10. Install termux-services
+# 10. Optional Shell Controller
+
+For a lightweight alternative to `termux-services`, use the repository's
+`termuxcam-daemon.sh` script to start, stop, restart, check status, or follow
+the application log:
+
+```sh
+chmod +x termuxcam-daemon.sh
+./termuxcam-daemon.sh start
+./termuxcam-daemon.sh status
+./termuxcam-daemon.sh log
+```
+
+The script expects the binary and config in `~/bins`, and the `.env` file is
+loaded from the same directory. Set `TERMUXCAM_DIR`, `TERMUXCAM_BIN`,
+`TERMUXCAM_CONFIG`, `TERMUXCAM_ENV`, `TERMUXCAM_LOG`, `TERMUXCAM_PIDFILE`, or
+`TERMUXCAM_PORT` to override those defaults. Set `TERMUXCAM_PORT=0` to disable
+the HTTP API.
+
+------------------------------------------------------------------------
+
+# 11. Install termux-services
 
 ```sh
 pkg install termux-services
@@ -336,7 +357,7 @@ which sv
 
 ------------------------------------------------------------------------
 
-# 11. Install termuxcam Service
+# 12. Install termuxcam Service
 
 ## 11.1 Create Service Directory
 
