@@ -3,11 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,7 +22,11 @@ var captureMu sync.Mutex
 
 const pollTimeoutSecs = 30
 
-const helpText = `termuxcam commands:
+const rule = "━━━━━━━━━━━━━━━━━━━━"
+
+const hintFooter = "ℹ️ Send /help for more commands."
+
+const helpText = `<b>termuxcam commands</b>
 /status - service status
 /system - system information
 /version - version
@@ -30,6 +36,8 @@ const helpText = `termuxcam commands:
 /capture [camera] [burst] - take photos (camera: -1 front, 0 back, 1 front; burst: 1-5)
 /torch on|off - flashlight
 /help - this message`
+
+var uptimeRe = regexp.MustCompile(`up\s+(.*?),\s+\d+\s+users?`)
 
 type tgUpdate struct {
 	UpdateID int64 `json:"update_id"`
@@ -114,6 +122,7 @@ func handleUpdate(u tgUpdate) {
 	}
 }
 
+// runCommand returns an HTML message for Telegram.
 func runCommand(text string) string {
 	fields := strings.Fields(text)
 	cmd := strings.ToLower(strings.TrimPrefix(fields[0], "/"))
@@ -126,9 +135,9 @@ func runCommand(text string) string {
 	case "help", "start":
 		return helpText
 	case "version":
-		return "termuxcam v1.0.0\nGo project for camera capture in Termux"
+		return "<b>termuxcam</b> v1.0.0\nGo project for camera capture in Termux"
 	case "status":
-		return fmt.Sprint(GetStatus())
+		return html.EscapeString(fmt.Sprint(GetStatus())) + "\n\n" + hintFooter
 	case "system":
 		return systemStatusText()
 	case "config":
@@ -138,20 +147,20 @@ func runCommand(text string) string {
 	case "torch":
 		return torchCommand(args)
 	default:
-		return "Unknown command. Send /help"
+		return "Unknown command.\n" + hintFooter
 	}
 }
 
 func configCommand(args []string) string {
 	if len(args) == 0 {
-		return fmt.Sprint(GetConfig())
+		return html.EscapeString(fmt.Sprint(GetConfig()))
 	}
 	switch args[0] {
 	case "get":
-		return fmt.Sprint(GetConfig())
+		return html.EscapeString(fmt.Sprint(GetConfig()))
 	case "reload":
 		if err := LoadConfig(resolveBinaryPath(CLI.ConfigFile)); err != nil {
-			return "error: " + err.Error()
+			return errText(err)
 		}
 		return "configuration reloaded"
 	case "set":
@@ -165,7 +174,7 @@ func configCommand(args []string) string {
 			}
 		}
 		if err := SetConfigValue(args[1]); err != nil {
-			return "error: " + err.Error()
+			return errText(err)
 		}
 		return "configuration updated"
 	}
@@ -225,7 +234,8 @@ func captureCommand(args []string) string {
 	}
 
 	if captureErr != nil {
-		return fmt.Sprintf("capture failed: %v\nsent %d photo(s), %d failed", captureErr, sent, failed)
+		return fmt.Sprintf("capture failed: %s\nsent %d photo(s), %d failed",
+			html.EscapeString(captureErr.Error()), sent, failed)
 	}
 	return fmt.Sprintf("sent %d photo(s), %d failed", sent, failed)
 }
@@ -236,13 +246,75 @@ func torchCommand(args []string) string {
 	}
 	out, err := exec.Command("termux-torch", args[0]).CombinedOutput()
 	if err != nil {
-		return fmt.Sprintf("failed: %v (%s)", err, strings.TrimSpace(string(out)))
+		return fmt.Sprintf("failed: %s (%s)",
+			html.EscapeString(err.Error()), html.EscapeString(strings.TrimSpace(string(out))))
 	}
 	return "flashlight " + args[0]
 }
 
-// sendText sends a plain-text message (no Markdown, so underscores and symbols are safe).
-// Telegram limits messages to 4096 characters, so long replies are split.
+// systemStatusText builds the /system message from GetSystemInfo, styled like the noipclient reports.
+func systemStatusText() string {
+	info := GetSystemInfo()
+
+	termux := orUnknown(info.TermuxVersion)
+	if termux == "unknown" {
+		termux = orUnknown(os.Getenv("TERMUX_VERSION"))
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📱 <b>System status</b>\n" + rule + "\n")
+
+	sb.WriteString("📱 <b>Device</b>\n")
+	sb.WriteString(row("Model", orUnknown(info.DeviceModel)) + "\n")
+	sb.WriteString(row("Android", fmt.Sprintf("%s (API %d)", orUnknown(info.AndroidVersion), info.APILevel)) + "\n")
+	sb.WriteString(row("Termux", termux) + "\n")
+	sb.WriteString(row("Architecture", info.CPUArch) + "\n")
+	sb.WriteString(row("CPU cores", strconv.Itoa(info.CPUCores)) + "\n\n")
+
+	sb.WriteString("⏱ <b>Runtime</b>\n")
+	sb.WriteString(row("Uptime", cleanUptime(info.Uptime)) + "\n")
+	sb.WriteString(row("Checked", info.Timestamp.Format("02/01/2006 15:04:05")) + "\n\n")
+
+	sb.WriteString("💾 <b>Resources</b>\n")
+	sb.WriteString(row("Memory", fmt.Sprintf("%s total, %s free", info.MemoryTotal, info.MemoryFree)) + "\n")
+	sb.WriteString(row("Storage", fmt.Sprintf("%s total, %s free", info.StorageTotal, info.StorageFree)) + "\n")
+	sb.WriteString(row("Battery", fmt.Sprintf("%d%% (%s)", info.BatteryLevel, orUnknown(info.BatteryStatus))) + "\n\n")
+
+	sb.WriteString("📷 <b>Cameras</b>\n")
+	if len(info.Cameras) == 0 {
+		sb.WriteString("• none detected\n")
+	}
+	for _, cam := range info.Cameras {
+		sb.WriteString(row("ID "+cam.ID, cam.Facing) + "\n")
+	}
+
+	sb.WriteString("\n" + hintFooter)
+	return sb.String()
+}
+
+// row renders one "• label: value" line, with the value in monospace.
+func row(label, value string) string {
+	return fmt.Sprintf("• %s: <code>%s</code>", html.EscapeString(label), html.EscapeString(value))
+}
+
+// orUnknown replaces the Portuguese placeholders returned by system.go.
+func orUnknown(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "N/A" || strings.HasPrefix(v, "Desconhec") {
+		return "unknown"
+	}
+	return v
+}
+
+// cleanUptime keeps only the duration from the `uptime` output.
+func cleanUptime(raw string) string {
+	if m := uptimeRe.FindStringSubmatch(raw); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return orUnknown(raw)
+}
+
+// sendText sends an HTML message. Telegram limits messages to 4096 characters, so long replies are split.
 func sendText(text string) {
 	runes := []rune(text)
 	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", Bot.Token)
@@ -253,7 +325,12 @@ func sendText(text string) {
 		if end > len(runes) {
 			end = len(runes)
 		}
-		form := url.Values{"chat_id": {Bot.ChatID}, "text": {string(runes[start:end])}}
+		form := url.Values{
+			"chat_id":                  {Bot.ChatID},
+			"text":                     {string(runes[start:end])},
+			"parse_mode":               {"HTML"},
+			"disable_web_page_preview": {"true"},
+		}
 		resp, err := client.PostForm(endpoint, form)
 		if err != nil {
 			log.Printf("telegram reply failed: %s", redact(err))
@@ -263,30 +340,8 @@ func sendText(text string) {
 	}
 }
 
-// systemStatusText formats the data from GetSystemInfo as plain text for Telegram.
-func systemStatusText() string {
-	info := GetSystemInfo()
-
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "📱 System status\n")
-	fmt.Fprintf(&sb, "Device: %s\n", info.DeviceModel)
-	fmt.Fprintf(&sb, "Android: %s (API %d)\n", info.AndroidVersion, info.APILevel)
-	fmt.Fprintf(&sb, "Termux: %s\n", info.TermuxVersion)
-	fmt.Fprintf(&sb, "Architecture: %s\n", info.CPUArch)
-	fmt.Fprintf(&sb, "CPU cores: %d\n", info.CPUCores)
-	fmt.Fprintf(&sb, "Uptime: %s\n", info.Uptime)
-	fmt.Fprintf(&sb, "Memory: %s (free: %s)\n", info.MemoryTotal, info.MemoryFree)
-	fmt.Fprintf(&sb, "Storage: %s (free: %s)\n", info.StorageTotal, info.StorageFree)
-	fmt.Fprintf(&sb, "Battery: %d%% (%s)\n", info.BatteryLevel, info.BatteryStatus)
-	sb.WriteString("Cameras:\n")
-	if len(info.Cameras) == 0 {
-		sb.WriteString("  none detected\n")
-	}
-	for _, cam := range info.Cameras {
-		fmt.Fprintf(&sb, "  - ID %s, facing %s\n", cam.ID, cam.Facing)
-	}
-	fmt.Fprintf(&sb, "Checked: %s", info.Timestamp.Format("02/01/2006 15:04:05"))
-	return sb.String()
+func errText(err error) string {
+	return "error: " + html.EscapeString(err.Error())
 }
 
 // redact removes the bot token from errors, because request URLs contain it.
