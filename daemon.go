@@ -45,7 +45,7 @@ func processAlive(pid int) bool {
 // output to the log file, writes the PID file, then returns to the caller
 // (which should exit). The child runs the same `start` command, but detects
 // the environment marker and runs the service loop instead of re-daemonizing.
-func Daemonize(logFile, configFile, envFile string, port int) error {
+func Daemonize(logFile, configFile string, port int) error {
 	// Refuse to start twice.
 	if pid, err := readPid(); err == nil && processAlive(pid) {
 		return fmt.Errorf("already running (pid %d)", pid)
@@ -71,7 +71,6 @@ func Daemonize(logFile, configFile, envFile string, port int) error {
 		"--port", strconv.Itoa(port),
 		"--log-file", logFile,
 		"--config-file", configFile,
-		"--env-file", envFile,
 	}
 
 	cmd := exec.Command(exe, args...)
@@ -115,14 +114,13 @@ func Daemonize(logFile, configFile, envFile string, port int) error {
 
 // RunDaemonChild is called from main() when the daemon environment marker is set.
 // It skips daemonization and runs the service loop in the current process.
-func RunDaemonChild(port int, configFile, envFile string) {
+func RunDaemonChild(port int, configFile string) {
 	log.Println("termuxcam daemon starting")
 
-	if err := LoadEnvFile(resolveBinaryPath(envFile)); err != nil {
-		log.Printf("Failed to load environment file: %v", err)
-	}
-	if err := LoadConfig(resolveBinaryPath(configFile)); err != nil {
+	CLI.ConfigFile = configFile
+	if err := LoadConfig(configFile); err != nil {
 		log.Printf("Failed to load configuration: %v", err)
+		return
 	}
 
 	InitBot()

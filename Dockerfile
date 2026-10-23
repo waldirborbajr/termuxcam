@@ -16,8 +16,7 @@ FROM alpine:latest
 RUN apk add --no-cache bash curl exiftool
 
 COPY --from=builder /app/termuxcam /usr/local/bin/
-COPY termuxcam.conf /etc/termuxcam.conf
-COPY .env.example /etc/.env
+COPY termuxcam.toml /usr/local/bin/termuxcam.toml
 
 WORKDIR /data
 

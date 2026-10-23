@@ -56,7 +56,7 @@ type tgUpdates struct {
 }
 
 // StartTelegramPoller receives commands with long polling (getUpdates). No webhook is needed.
-// Only messages from the configured TG_CHAT_ID are accepted.
+// Only messages from the configured Telegram chat are accepted.
 func StartTelegramPoller() {
 	if Bot == nil {
 		return
@@ -159,7 +159,7 @@ func configCommand(args []string) string {
 	case "get":
 		return html.EscapeString(fmt.Sprint(GetConfig()))
 	case "reload":
-		if err := LoadConfig(resolveBinaryPath(CLI.ConfigFile)); err != nil {
+		if err := LoadConfig(CLI.ConfigFile); err != nil {
 			return errText(err)
 		}
 		return "configuration reloaded"

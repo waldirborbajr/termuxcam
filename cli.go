@@ -22,8 +22,7 @@ var CLI struct {
 
 	Debug      bool   `help:"Enable debug mode"`
 	LogFile    string `help:"Log file path" default:"camera_captures/capture.log"`
-	ConfigFile string `help:"Configuration file path" default:"termuxcam.conf"`
-	EnvFile    string `help:"Environment file path" default:".env"`
+	ConfigFile string `help:"Configuration file path" default:"termuxcam.toml"`
 }
 
 // ---------------------------------------------------------------------------
@@ -37,17 +36,13 @@ type StartCmd struct {
 
 func (s *StartCmd) Run(ctx *kong.Context) error {
 	if s.Daemon {
-		return Daemonize(CLI.LogFile, CLI.ConfigFile, CLI.EnvFile, s.Port)
+		return Daemonize(CLI.LogFile, CLI.ConfigFile, s.Port)
 	}
 
 	log.Println("Starting termuxcam (foreground)...")
 
-	if err := LoadEnvFile(resolveBinaryPath(CLI.EnvFile)); err != nil {
-		log.Printf("Failed to load environment file: %v", err)
-	}
-
-	if err := LoadConfig(resolveBinaryPath(CLI.ConfigFile)); err != nil {
-		log.Printf("Failed to load configuration: %v", err)
+	if err := LoadConfig(CLI.ConfigFile); err != nil {
+		return fmt.Errorf("load configuration: %w", err)
 	}
 	config := GetConfig()
 	log.Printf("Config loaded -> interval=%s | cameraMode=%d | burst=%d | config=%s",
@@ -82,7 +77,7 @@ func (s *RestartCmd) Run(ctx *kong.Context) error {
 	if err := StopDaemon(); err != nil {
 		log.Printf("stop during restart: %v", err)
 	}
-	return Daemonize(CLI.LogFile, CLI.ConfigFile, CLI.EnvFile, s.Port)
+	return Daemonize(CLI.LogFile, CLI.ConfigFile, s.Port)
 }
 
 type StatusCmd struct{}
@@ -105,7 +100,7 @@ type ConfigCmd struct {
 
 func (c *ConfigCmd) Run(ctx *kong.Context) error {
 	if c.Reload {
-		return LoadConfig(resolveBinaryPath(CLI.ConfigFile))
+		return LoadConfig(CLI.ConfigFile)
 	}
 	if c.Set != "" {
 		return SetConfigValue(c.Set)

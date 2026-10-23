@@ -60,7 +60,6 @@ func runDaemonChild() {
 		Port       int      `help:"port" default:"8080"`
 		LogFile    string   `help:"log"`
 		ConfigFile string   `help:"config"`
-		EnvFile    string   `help:"env"`
 	}
 
 	kong.Parse(&child,
@@ -84,5 +83,5 @@ func runDaemonChild() {
 		log.Printf("open log file: %v", err)
 	}
 
-	RunDaemonChild(child.Port, child.ConfigFile, child.EnvFile)
+	RunDaemonChild(child.Port, child.ConfigFile)
 }

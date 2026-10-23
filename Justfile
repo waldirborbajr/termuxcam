@@ -20,10 +20,9 @@ install-termux:
     pkg install golang git termux-api termux-services
     mkdir -p "$HOME/bins"
     go build -o "$HOME/bins/termuxcam" .
-    if [ ! -f "$HOME/bins/termuxcam.conf" ]; then cp termuxcam.conf "$HOME/bins/termuxcam.conf"; fi
-    if [ ! -f "$HOME/bins/.env" ]; then cp .env.example "$HOME/bins/.env"; fi
-    chmod 600 "$HOME/bins/.env"
-    @echo "Installation complete. Review ~/bins/.env before starting the service."
+    if [ ! -f "$HOME/bins/termuxcam.toml" ]; then cp termuxcam.toml "$HOME/bins/termuxcam.toml"; fi
+    chmod 600 "$HOME/bins/termuxcam.toml"
+    @echo "Installation complete. Review ~/bins/termuxcam.toml before starting the service."
 
 vet:
     go vet ./...
@@ -34,22 +33,16 @@ test:
     go test -v ./...
 
 start:
-    ./termuxcam-ctl start
+    ./termuxcam start --daemon
 
 stop:
-    ./termuxcam-ctl stop
+    ./termuxcam stop
 
 restart:
-    ./termuxcam-ctl restart
+    ./termuxcam restart
 
 status:
-    ./termuxcam-ctl status
+    ./termuxcam status
 
 logs:
-    ./termuxcam-ctl logs
-
-install-service:
-    ./termuxcam-ctl install
-
-uninstall-service:
-    ./termuxcam-ctl uninstall
+    tail -f camera_captures/capture.log

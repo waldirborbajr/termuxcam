@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 var (
@@ -17,17 +18,34 @@ var (
 )
 
 type Config struct {
-	CaptureInterval time.Duration
-	CameraMode      int
-	BurstCount      int
-	KeepLogsDays    int
-	EncryptionKey   string
+	CaptureInterval  time.Duration `toml:"capture"`
+	CameraMode       int           `toml:"camera"`
+	BurstCount       int           `toml:"burst"`
+	KeepLogsDays     int           `toml:"logs_days"`
+	TelegramBotToken string        `toml:"tg_bot_token" json:"-"`
+	TelegramChatID   string        `toml:"tg_chat_id" json:"-"`
+	EncryptionKey    string        `toml:"encryption_key" json:"-"`
+	Debug            bool          `toml:"debug"`
 }
 
-func LoadConfig(configFile string) (returnErr error) {
+func (c Config) String() string {
+	return fmt.Sprintf(
+		"{CaptureInterval:%s CameraMode:%d BurstCount:%d KeepLogsDays:%d TelegramConfigured:%t EncryptionEnabled:%t Debug:%t}",
+		c.CaptureInterval,
+		c.CameraMode,
+		c.BurstCount,
+		c.KeepLogsDays,
+		c.TelegramBotToken != "" && c.TelegramChatID != "",
+		c.EncryptionKey != "",
+		c.Debug,
+	)
+}
+
+func LoadConfig(configFile string) error {
 	ConfigMu.Lock()
 	defer ConfigMu.Unlock()
 
+	configFile = resolveBinaryPath(configFile)
 	AppConfig = Config{
 		CaptureInterval: 5 * time.Minute,
 		CameraMode:      1,
@@ -35,65 +53,50 @@ func LoadConfig(configFile string) (returnErr error) {
 		KeepLogsDays:    3,
 	}
 
-	file, err := os.Open(configFile)
+	data, err := os.ReadFile(configFile)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
-	defer func() {
-		if closeErr := file.Close(); returnErr == nil && closeErr != nil {
-			returnErr = closeErr
-		}
-	}()
 
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		switch key {
-		case "capture":
-			if dur, err := time.ParseDuration(value); err == nil {
-				if dur >= time.Minute && dur <= 24*time.Hour {
-					AppConfig.CaptureInterval = dur
-				}
-			}
-		case "camera":
-			mode, err := strconv.Atoi(value)
-			if err == nil && mode >= 0 && mode <= 2 {
-				AppConfig.CameraMode = mode
-			}
-		case "burst":
-			count, err := strconv.Atoi(value)
-			if err == nil && count >= 1 && count <= 5 {
-				AppConfig.BurstCount = count
-			}
-		case "logs_days":
-			days, err := strconv.Atoi(value)
-			if err == nil && days >= 1 && days <= 30 {
-				AppConfig.KeepLogsDays = days
-			}
-		case "encryption_key":
-			AppConfig.EncryptionKey = value
-		}
-	}
-	if key := os.Getenv("ENCRYPTION_KEY"); key != "" {
-		AppConfig.EncryptionKey = key
+	parsed := struct {
+		Capture          string `toml:"capture"`
+		Camera           int    `toml:"camera"`
+		Burst            int    `toml:"burst"`
+		LogsDays         int    `toml:"logs_days"`
+		TelegramBotToken string `toml:"tg_bot_token"`
+		TelegramChatID   string `toml:"tg_chat_id"`
+		EncryptionKey    string `toml:"encryption_key"`
+		Debug            bool   `toml:"debug"`
+	}{
+		Capture:  "5m",
+		Camera:   1,
+		Burst:    1,
+		LogsDays: 3,
 	}
 
-	return scanner.Err()
+	if err := toml.Unmarshal(data, &parsed); err != nil {
+		return fmt.Errorf("parse TOML configuration %q: %w", configFile, err)
+	}
+	if dur, err := time.ParseDuration(parsed.Capture); err == nil && dur >= time.Minute && dur <= 24*time.Hour {
+		AppConfig.CaptureInterval = dur
+	}
+	if parsed.Camera >= 0 && parsed.Camera <= 2 {
+		AppConfig.CameraMode = parsed.Camera
+	}
+	if parsed.Burst >= 1 && parsed.Burst <= 5 {
+		AppConfig.BurstCount = parsed.Burst
+	}
+	if parsed.LogsDays >= 1 && parsed.LogsDays <= 30 {
+		AppConfig.KeepLogsDays = parsed.LogsDays
+	}
+	AppConfig.TelegramBotToken = parsed.TelegramBotToken
+	AppConfig.TelegramChatID = parsed.TelegramChatID
+	AppConfig.EncryptionKey = parsed.EncryptionKey
+	AppConfig.Debug = parsed.Debug
+	return nil
 }
 
 func GetConfig() Config {
@@ -143,59 +146,41 @@ func SetConfigValue(setting string) error {
 		return fmt.Errorf("unknown setting: %s", key)
 	}
 
-	return SaveConfig()
+	return saveConfig(AppConfig)
 }
 
 func SaveConfig() error {
-	content := fmt.Sprintf(`# termuxcam configuration
-capture=%s
-camera=%d
-burst=%d
-logs_days=%d
-`, AppConfig.CaptureInterval, AppConfig.CameraMode, AppConfig.BurstCount, AppConfig.KeepLogsDays)
+	return saveConfig(GetConfig())
+}
 
-	if AppConfig.EncryptionKey != "" {
-		content += fmt.Sprintf("encryption_key=%s\n", AppConfig.EncryptionKey)
+func saveConfig(config Config) error {
+	serialized := struct {
+		Capture          string `toml:"capture"`
+		Camera           int    `toml:"camera"`
+		Burst            int    `toml:"burst"`
+		LogsDays         int    `toml:"logs_days"`
+		TelegramBotToken string `toml:"tg_bot_token"`
+		TelegramChatID   string `toml:"tg_chat_id"`
+		EncryptionKey    string `toml:"encryption_key"`
+		Debug            bool   `toml:"debug"`
+	}{
+		Capture:          config.CaptureInterval.String(),
+		Camera:           config.CameraMode,
+		Burst:            config.BurstCount,
+		LogsDays:         config.KeepLogsDays,
+		TelegramBotToken: config.TelegramBotToken,
+		TelegramChatID:   config.TelegramChatID,
+		EncryptionKey:    config.EncryptionKey,
+		Debug:            config.Debug,
+	}
+	content, err := toml.Marshal(serialized)
+	if err != nil {
+		return fmt.Errorf("encode TOML configuration: %w", err)
 	}
 
 	configPath := resolveBinaryPath(CLI.ConfigFile)
-	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
-		return err
+	if err := os.WriteFile(configPath, content, 0600); err != nil {
+		return fmt.Errorf("write TOML configuration %q: %w", configPath, err)
 	}
 	return os.Chmod(configPath, 0600)
-}
-
-func LoadEnvFile(envPath string) (returnErr error) {
-	file, err := os.Open(envPath)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if closeErr := file.Close(); returnErr == nil && closeErr != nil {
-			returnErr = closeErr
-		}
-	}()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-		if _, exists := os.LookupEnv(key); !exists {
-			if err := os.Setenv(key, value); err != nil {
-				return err
-			}
-		}
-	}
-
-	return scanner.Err()
 }
