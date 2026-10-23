@@ -229,16 +229,18 @@ Use these values in the `tg_bot_token` and `tg_chat_id` settings in
 
 # 7. Build
 
-Create a binary directory:
+Build the binary into the repository's `build/` directory:
+
+```sh
+mkdir -p build
+go build -o build/termuxcam ./cmd/termuxcam
+```
+
+Copy it to the binary directory used for installation:
 
 ```sh
 mkdir -p ~/bins
-```
-
-Build all Go source files in the module:
-
-```sh
-go build -o ~/bins/termuxcam ./cmd/termuxcam
+cp build/termuxcam ~/bins/termuxcam
 ```
 
 Verify:
@@ -252,8 +254,8 @@ ls -lh ~/bins/termuxcam
 # 8. Configure: `termuxcam.toml`
 
 `termuxcam` reads `termuxcam.toml` relative to the executable's
-directory, regardless of the current working directory (`~/bins/`, if
-you followed step 7). Use `--config-file` to select a different path;
+directory (`~/bins/`, if you followed step 7), regardless of the
+current working directory. Use `--config-file` to select a different path;
 relative paths are also resolved from the executable's directory.
 
 The application uses built-in defaults if the file is missing. Copy

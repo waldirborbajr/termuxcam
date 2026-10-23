@@ -9,13 +9,13 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -o termuxcam ./cmd/termuxcam
+RUN mkdir -p build && go build -o build/termuxcam ./cmd/termuxcam
 
 FROM alpine:latest
 
 RUN apk add --no-cache bash curl exiftool
 
-COPY --from=builder /app/termuxcam /usr/local/bin/
+COPY --from=builder /app/build/termuxcam /usr/local/bin/
 COPY termuxcam.toml /usr/local/bin/termuxcam.toml
 
 WORKDIR /data
