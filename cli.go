@@ -11,6 +11,8 @@ import (
 
 var CLI struct {
 	Start   StartCmd   `cmd:"" help:"Start the capture service"`
+	Stop    StopCmd    `cmd:"" help:"Stop the background daemon"`
+	Restart RestartCmd `cmd:"" help:"Restart the background daemon"`
 	Status  StatusCmd  `cmd:"" help:"Show service status"`
 	Config  ConfigCmd  `cmd:"" help:"Manage configuration"`
 	Capture CaptureCmd `cmd:"" help:"Capture photos manually"`
@@ -24,13 +26,21 @@ var CLI struct {
 	EnvFile    string `help:"Environment file path" default:".env"`
 }
 
+// ---------------------------------------------------------------------------
+// start
+// ---------------------------------------------------------------------------
+
 type StartCmd struct {
-	Daemon bool `help:"Run as a daemon service"`
+	Daemon bool `help:"Run as a background daemon"`
 	Port   int  `help:"HTTP API port" default:"8080"`
 }
 
 func (s *StartCmd) Run(ctx *kong.Context) error {
-	log.Println("Starting termuxcam...")
+	if s.Daemon {
+		return Daemonize(CLI.LogFile, CLI.ConfigFile, CLI.EnvFile, s.Port)
+	}
+
+	log.Println("Starting termuxcam (foreground)...")
 
 	if err := LoadEnvFile(resolveBinaryPath(CLI.EnvFile)); err != nil {
 		log.Printf("Failed to load environment file: %v", err)
@@ -50,22 +60,42 @@ func (s *StartCmd) Run(ctx *kong.Context) error {
 		go StartAPIServer(s.Port)
 	}
 
-	if s.Daemon {
-		RunDaemon()
-	} else {
-		RunOnce()
-	}
-
+	RunDaemon() // blocks forever; use Ctrl+C in foreground
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// stop / restart / status
+// ---------------------------------------------------------------------------
+
+type StopCmd struct{}
+
+func (s *StopCmd) Run(ctx *kong.Context) error {
+	return StopDaemon()
+}
+
+type RestartCmd struct {
+	Port int `help:"HTTP API port" default:"8080"`
+}
+
+func (s *RestartCmd) Run(ctx *kong.Context) error {
+	if err := StopDaemon(); err != nil {
+		log.Printf("stop during restart: %v", err)
+	}
+	return Daemonize(CLI.LogFile, CLI.ConfigFile, CLI.EnvFile, s.Port)
 }
 
 type StatusCmd struct{}
 
 func (s *StatusCmd) Run(ctx *kong.Context) error {
-	status := GetStatus()
-	fmt.Println(status)
+	fmt.Println(GetStatus())
+	fmt.Println(DaemonStatusString())
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// config
+// ---------------------------------------------------------------------------
 
 type ConfigCmd struct {
 	Get    bool   `help:"Show the current configuration"`
@@ -77,14 +107,16 @@ func (c *ConfigCmd) Run(ctx *kong.Context) error {
 	if c.Reload {
 		return LoadConfig(resolveBinaryPath(CLI.ConfigFile))
 	}
-
 	if c.Set != "" {
 		return SetConfigValue(c.Set)
 	}
-
 	fmt.Println(GetConfig())
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// capture
+// ---------------------------------------------------------------------------
 
 type CaptureCmd struct {
 	Camera int `help:"Camera ID (0=back, 1=front)" default:"-1"`
@@ -116,6 +148,10 @@ func (c *CaptureCmd) Run(ctx *kong.Context) error {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// torch
+// ---------------------------------------------------------------------------
+
 type TorchCmd struct {
 	State string `arg:"" enum:"on,off" help:"Flashlight action (on or off)"`
 }
@@ -125,7 +161,6 @@ func (t *TorchCmd) Run(ctx *kong.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to turn flashlight %s: %w (%s)", t.State, err, strings.TrimSpace(string(output)))
 	}
-
 	if t.State == "on" {
 		fmt.Println("Flashlight turned on")
 	} else {
@@ -133,6 +168,10 @@ func (t *TorchCmd) Run(ctx *kong.Context) error {
 	}
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// system / version
+// ---------------------------------------------------------------------------
 
 type SystemCmd struct{}
 
@@ -144,7 +183,7 @@ func (s *SystemCmd) Run(ctx *kong.Context) error {
 type VersionCmd struct{}
 
 func (v *VersionCmd) Run(ctx *kong.Context) error {
-	fmt.Println("termuxcam v1.0.0")
+	fmt.Printf("termuxcam v%s\n", ProjectVersion)
 	fmt.Println("Go project for camera capture in Termux")
 	return nil
 }

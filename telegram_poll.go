@@ -135,7 +135,7 @@ func runCommand(text string) string {
 	case "help", "start":
 		return helpText
 	case "version":
-		return "<b>termuxcam</b> v1.0.0\nGo project for camera capture in Termux"
+		return fmt.Sprintf("<b>termuxcam</b> v%s\nGo project for camera capture in Termux", ProjectVersion)
 	case "status":
 		return html.EscapeString(fmt.Sprint(GetStatus())) + "\n\n" + hintFooter
 	case "system":
