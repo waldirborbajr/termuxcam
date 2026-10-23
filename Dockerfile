@@ -1,4 +1,4 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 RUN apk add --no-cache git make
 
@@ -9,7 +9,7 @@ RUN go mod download
 
 COPY . .
 
-RUN go build -o termuxcam .
+RUN go build -o termuxcam ./cmd/termuxcam
 
 FROM alpine:latest
 

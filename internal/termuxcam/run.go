@@ -1,4 +1,4 @@
-package main
+package termuxcam
 
 import (
 	"log"
@@ -8,7 +8,7 @@ import (
 	"github.com/alecthomas/kong"
 )
 
-func main() {
+func Run() {
 	InitState()
 
 	// Fast-path for the daemon child: if the environment marker is set, we are

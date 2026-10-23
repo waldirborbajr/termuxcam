@@ -155,8 +155,8 @@ Example output:
 ]
 ```
 
-`capture.go` keeps these as two clearly labeled constants near the top
-of the file:
+`internal/termuxcam/capture.go` keeps these as two clearly labeled
+constants near the top of the file:
 
 ```go
 const (
@@ -238,7 +238,7 @@ mkdir -p ~/bins
 Build all Go source files in the module:
 
 ```sh
-go build -o ~/bins/termuxcam .
+go build -o ~/bins/termuxcam ./cmd/termuxcam
 ```
 
 Verify:
@@ -466,9 +466,9 @@ echo "exit code: $?"
 ## Captured files exist but are 0 bytes
 
 The capture may have timed out before `termux-camera-photo` finished
-writing the file. `capture.go` enforces a 45-second timeout and
+writing the file. `internal/termuxcam/capture.go` enforces a 45-second timeout and
 discards empty files. If captures routinely need longer, adjust
-`CaptureTimeout` in `capture.go` and rebuild.
+`CaptureTimeout` in `internal/termuxcam/capture.go` and rebuild.
 
 Clean up any pre-existing empty files:
 
@@ -480,7 +480,7 @@ find ~/bins/camera_captures -name "*.jpg" -size 0 -delete
 
 This means the two hardware ID constants don't match your device. Redo
 step 3 (`termux-camera-info`) and confirm `FrontCameraHWID` /
-`BackCameraHWID` in `capture.go` match what your device actually
+`BackCameraHWID` in `internal/termuxcam/capture.go` match what your device actually
 reports, then rebuild.
 
 ## termux-camera-photo executable not found
@@ -595,12 +595,14 @@ On MIUI (Xiaomi) devices, this alone is often not enough — also check:
 
 # Technical Notes
 
+- The executable entry point is in `cmd/termuxcam`; application code is
+  organized in `internal/termuxcam`
 - Settings are configured via `termuxcam.toml`, read relative to the
   executable's directory — no recompilation needed to change them
 - Camera mode: `0`=back, `1`=front, `2`=both (captures and uploads a
   separate photo per camera each cycle)
 - Physical hardware camera IDs are isolated in two constants in
-  `capture.go` and are device-specific — verify with `termux-camera-info`
+  `internal/termuxcam/capture.go` and are device-specific — verify with `termux-camera-info`
 - Discards and deletes any capture that comes back as a 0-byte file
 - Uploads using the Telegram Bot API, with a caption identifying the
   camera and timestamp
