@@ -7,10 +7,10 @@ build:
 
 build-all:
     mkdir -p build
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/termuxcam-linux-amd64 ./cmd/termuxcam
-    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o build/termuxcam-linux-arm64 ./cmd/termuxcam
-    CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -o build/termuxcam-android-arm64 ./cmd/termuxcam
-    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o build/termuxcam-windows-amd64.exe ./cmd/termuxcam
+    GOOS=linux GOARCH=amd64 go build -o build/termuxcam-linux-amd64 ./cmd/termuxcam
+    GOOS=linux GOARCH=arm64 go build -o build/termuxcam-linux-arm64 ./cmd/termuxcam
+    GOOS=android GOARCH=arm64 go build -o build/termuxcam-android-arm64 ./cmd/termuxcam
+    GOOS=windows GOARCH=amd64 go build -o build/termuxcam-windows-amd64.exe ./cmd/termuxcam
 
 clean:
     rm -rf build
