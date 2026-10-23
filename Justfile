@@ -25,6 +25,11 @@ install-termux:
     chmod 600 "$HOME/bins/.env"
     @echo "Installation complete. Review ~/bins/.env before starting the service."
 
+vet:
+    go vet ./...
+
+check: vet test
+
 test:
     go test -v ./...
 
