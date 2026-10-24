@@ -57,6 +57,15 @@ func resolveBinaryPath(path string) string {
 	if filepath.IsAbs(path) {
 		return path
 	}
+
+	workDir, err := os.Getwd()
+	if err == nil {
+		cwdCandidate := filepath.Join(workDir, path)
+		if _, statErr := os.Stat(cwdCandidate); statErr == nil {
+			return cwdCandidate
+		}
+	}
+
 	return filepath.Join(GetBinaryDir(), path)
 }
 

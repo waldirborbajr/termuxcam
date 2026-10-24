@@ -253,10 +253,11 @@ ls -lh ~/bins/termuxcam
 
 # 8. Configure: `termuxcam.toml`
 
-`termuxcam` reads `termuxcam.toml` relative to the executable's
-directory (`~/bins/`, if you followed step 7), regardless of the
-current working directory. Use `--config-file` to select a different path;
-relative paths are also resolved from the executable's directory.
+`termuxcam` prefers the current working directory for relative paths when a
+matching file already exists there, and falls back to the executable's
+directory otherwise (`~/bins/`, if you followed step 7). Use
+`--config-file` to select a different path; relative paths follow the same
+resolution rules.
 
 The application uses built-in defaults if the file is missing. Copy
 the sample configuration and edit it:

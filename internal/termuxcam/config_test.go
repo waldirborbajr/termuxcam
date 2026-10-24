@@ -96,7 +96,26 @@ func TestSaveConfigRoundTripsTOML(t *testing.T) {
 	}
 }
 
-func TestResolveBinaryPathUsesExecutableDirectory(t *testing.T) {
+func TestResolveBinaryPathPrefersCurrentWorkingDirectoryWhenPresent(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configFile := filepath.Join(cwd, "termuxcam-override.toml")
+	if err := os.WriteFile(configFile, []byte("capture = \"10m\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(configFile) })
+
+	if err := LoadConfig(filepath.Base(configFile)); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetConfig().CaptureInterval; got != 10*time.Minute {
+		t.Errorf("loaded capture interval = %s, want 10m", got)
+	}
+}
+
+func TestResolveBinaryPathUsesExecutableDirectoryFallback(t *testing.T) {
 	file, err := os.CreateTemp(GetBinaryDir(), "termuxcam-*.toml")
 	if err != nil {
 		t.Fatal(err)
