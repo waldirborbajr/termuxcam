@@ -12,9 +12,10 @@ local file once the upload is confirmed.
 
 Written in Go — a single compiled binary with no external runtime
 dependency (Python, Node.js, etc.), designed to run as a long-lived
-service via `termux-services`. Capture interval and camera selection
-(front/back/both) are configured at runtime via a plain-text
-`termuxcam.conf` file — no recompiling needed to change them.
+service via `termux-services`. Capture interval, camera selection
+(front/back/both), and Telegram credentials are configured in
+`termuxcam.toml` next to the executable — no recompiling needed to
+change them.
 
 **Flow:** capture via `termux-camera-photo` (Termux:API) → upload to
 Telegram with a caption identifying which camera → delete local image
@@ -154,8 +155,8 @@ Example output:
 ]
 ```
 
-`capture.go` keeps these as two clearly labeled constants near the top
-of the file:
+`internal/termuxcam/capture.go` keeps these as two clearly labeled
+constants near the top of the file:
 
 ```go
 const (
@@ -198,7 +199,7 @@ Example:
 > ⚠️ Treat this token like a password. Never paste it into a chat, issue,
 > or commit history in plain text — if it's ever exposed, revoke it
 > immediately via **@BotFather → /mybots → your bot → API Token →
-> Revoke**, and update it wherever it's configured (step 11.2 below).
+> Revoke**, and update it in `termuxcam.toml` (step 8 below).
 
 ------------------------------------------------------------------------
 
@@ -218,25 +219,28 @@ Find:
 "chat": { "id": 782816475 }
 ```
 
-Save:
+Use these values in the `tg_bot_token` and `tg_chat_id` settings in
+`termuxcam.toml`:
 
-- `TG_BOT_TOKEN`
-- `TG_CHAT_ID`
+- bot token
+- chat ID
 
 ------------------------------------------------------------------------
 
 # 7. Build
 
-Create a binary directory:
+Build the binary into the repository's `build/` directory:
+
+```sh
+mkdir -p build
+go build -o build/termuxcam ./cmd/termuxcam
+```
+
+Copy it to the binary directory used for installation:
 
 ```sh
 mkdir -p ~/bins
-```
-
-Build all Go source files in the module:
-
-```sh
-go build -o ~/bins/termuxcam .
+cp build/termuxcam ~/bins/termuxcam
 ```
 
 Verify:
@@ -247,34 +251,39 @@ ls -lh ~/bins/termuxcam
 
 ------------------------------------------------------------------------
 
-# 8. Configure: `termuxcam.conf`
+# 8. Configure: `termuxcam.toml`
 
-`termuxcam` reads `termuxcam.conf` from the binary's directory by
-default (`~/bins/`, if you followed step 7). This lets you change the
-capture interval or camera selection without recompiling. Use
-`--config-file` to select a different path.
+`termuxcam` prefers the current working directory for relative paths when a
+matching file already exists there, and falls back to the executable's
+directory otherwise (`~/bins/`, if you followed step 7). Use
+`--config-file` to select a different path; relative paths follow the same
+resolution rules.
 
-The application uses built-in defaults if the file is missing, but it
-does not create the file automatically. Copy the sample files:
+The application uses built-in defaults if the file is missing. Copy
+the sample configuration and edit it:
 
 ```sh
-cp -n termuxcam.conf ~/bins/termuxcam.conf
-cp -n .env.example ~/bins/.env
-chmod 600 ~/bins/.env
+cp -n termuxcam.toml ~/bins/termuxcam.toml
+chmod 600 ~/bins/termuxcam.toml
 ```
 
-Edit `~/bins/.env` and set `TG_BOT_TOKEN` and `TG_CHAT_ID` before
-starting the capture service.
+Set `tg_bot_token` and `tg_chat_id` in `~/bins/termuxcam.toml` before
+starting the capture service. The TOML file also replaces the old
+`.env` and `termuxcam.conf` settings.
 
 | Setting | Accepted values | Notes |
 |---|---|---|
-| `capture` | Go duration such as `5m` or `1h` | Accepted range: 1 minute to 24 hours. Invalid values leave the previous/default value unchanged. |
+| `tg_bot_token` | Telegram bot token | Required for Telegram uploads. |
+| `tg_chat_id` | Telegram chat ID | Required for Telegram uploads. |
+| `encryption_key` | 16, 24, or 32 bytes | Optional AES key; leave empty to disable encryption. |
+| `debug` | `true` or `false` | Debug mode setting. |
+| `capture` | TOML string duration such as `"5m"` or `"1h"` | Accepted range: 1 minute to 24 hours. Invalid values leave the previous/default value unchanged. |
 | `camera` | `0`, `1`, or `2` | `0`=back, `1`=front, `2`=both. Invalid values leave the previous/default value unchanged. |
 | `burst` | `1` to `5` | Number of photos per capture cycle. |
 | `logs_days` | `1` to `30` | Retention period for rotated logs. |
 
-Full-line comments start with `#`. Malformed and unknown lines are
-ignored.
+TOML comments start with `#`. Malformed TOML is reported as a
+configuration error.
 
 **Editing the config while the service is running:** changes only take
 effect after a restart — the file is read once at startup, not
@@ -289,9 +298,6 @@ sv restart termuxcam
 # 9. Test Manually
 
 ```sh
-export TG_BOT_TOKEN="YOUR_TOKEN"
-export TG_CHAT_ID="YOUR_CHAT_ID"
-
 ~/bins/termuxcam start
 ```
 
@@ -315,24 +321,20 @@ error in a log file instead of showing it directly in your terminal.
 
 ------------------------------------------------------------------------
 
-# 10. Optional Shell Controller
+# 10. Run as a Background Daemon
 
-For a lightweight alternative to `termux-services`, use the repository's
-`termuxcam-daemon.sh` script to start, stop, restart, check status, or follow
-the application log:
+The CLI can start and manage a background daemon directly:
 
 ```sh
-chmod +x termuxcam-daemon.sh
-./termuxcam-daemon.sh start
-./termuxcam-daemon.sh status
-./termuxcam-daemon.sh log
+~/bins/termuxcam start --daemon
+~/bins/termuxcam status
+~/bins/termuxcam restart
+~/bins/termuxcam stop
 ```
 
-The script expects the binary and config in `~/bins`, and the `.env` file is
-loaded from the same directory. Set `TERMUXCAM_DIR`, `TERMUXCAM_BIN`,
-`TERMUXCAM_CONFIG`, `TERMUXCAM_ENV`, `TERMUXCAM_LOG`, `TERMUXCAM_PIDFILE`, or
-`TERMUXCAM_PORT` to override those defaults. Set `TERMUXCAM_PORT=0` to disable
-the HTTP API.
+The default configuration path remains relative to the executable. Supply
+`--config-file` to choose another file; relative paths are resolved from
+the executable's directory.
 
 ------------------------------------------------------------------------
 
@@ -380,8 +382,7 @@ export HOME=/data/data/com.termux/files/home
 export PATH=/data/data/com.termux/files/usr/bin:$PATH
 
 exec "$HOME/bins/termuxcam" start --daemon \
-  --config-file "$HOME/bins/termuxcam.conf" \
-  --env-file "$HOME/bins/.env"
+  --config-file "$HOME/bins/termuxcam.toml"
 EOF
 ```
 
@@ -468,9 +469,9 @@ echo "exit code: $?"
 ## Captured files exist but are 0 bytes
 
 The capture may have timed out before `termux-camera-photo` finished
-writing the file. `capture.go` enforces a 45-second timeout and
+writing the file. `internal/termuxcam/capture.go` enforces a 45-second timeout and
 discards empty files. If captures routinely need longer, adjust
-`CaptureTimeout` in `capture.go` and rebuild.
+`CaptureTimeout` in `internal/termuxcam/capture.go` and rebuild.
 
 Clean up any pre-existing empty files:
 
@@ -482,7 +483,7 @@ find ~/bins/camera_captures -name "*.jpg" -size 0 -delete
 
 This means the two hardware ID constants don't match your device. Redo
 step 3 (`termux-camera-info`) and confirm `FrontCameraHWID` /
-`BackCameraHWID` in `capture.go` match what your device actually
+`BackCameraHWID` in `internal/termuxcam/capture.go` match what your device actually
 reports, then rebuild.
 
 ## termux-camera-photo executable not found
@@ -509,13 +510,9 @@ If `PATH` looks correct in your interactive shell but the service still
 can't find the binary, the `run` script may not be exporting `PATH` (or
 `HOME`) — recheck step 11.2.
 
-## TG_BOT_TOKEN / TG_CHAT_ID not set
+## Telegram credentials not configured
 
-Check:
-
-```sh
-cat ~/.termux/service/termuxcam/run
-```
+Set `tg_bot_token` and `tg_chat_id` in `~/bins/termuxcam.toml`.
 
 Restart:
 
@@ -526,7 +523,7 @@ sv restart termuxcam
 ## Config changes don't seem to apply
 
 The config file is only read once, at process startup. After editing
-`~/bins/termuxcam.conf`, restart the service:
+`~/bins/termuxcam.toml`, restart the service:
 
 ```sh
 sv restart termuxcam
@@ -601,13 +598,14 @@ On MIUI (Xiaomi) devices, this alone is often not enough — also check:
 
 # Technical Notes
 
-- Capture interval and camera selection are configured via
-  `termuxcam.conf`, read once at startup from the same directory as
-  the binary — no recompilation needed to change them
+- The executable entry point is in `cmd/termuxcam`; application code is
+  organized in `internal/termuxcam`
+- Settings are configured via `termuxcam.toml`, read relative to the
+  executable's directory — no recompilation needed to change them
 - Camera mode: `0`=back, `1`=front, `2`=both (captures and uploads a
   separate photo per camera each cycle)
 - Physical hardware camera IDs are isolated in two constants in
-  `capture.go` and are device-specific — verify with `termux-camera-info`
+  `internal/termuxcam/capture.go` and are device-specific — verify with `termux-camera-info`
 - Discards and deletes any capture that comes back as a 0-byte file
 - Uploads using the Telegram Bot API, with a caption identifying the
   camera and timestamp

@@ -1,0 +1,21 @@
+# Telegram Bot API credentials
+tg_bot_token = ""
+tg_chat_id = ""
+
+# Optional 16, 24, or 32-byte AES key. Leave empty to disable encryption.
+encryption_key = ""
+
+# Enable debug mode
+debug = false
+
+# Capture interval (1m to 24h)
+capture = "5m"
+
+# Camera mode: 0=back, 1=front, 2=both
+camera = 1
+
+# Number of photos per cycle (1-5)
+burst = 1
+
+# Keep logs for N days (1-30)
+logs_days = 3

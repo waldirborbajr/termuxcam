@@ -1,4 +1,4 @@
-package main
+package termuxcam
 
 import (
 	"bytes"
@@ -19,11 +19,14 @@ type TelegramBot struct {
 }
 
 func InitBot() {
-	token := os.Getenv("TG_BOT_TOKEN")
-	chatID := os.Getenv("TG_CHAT_ID")
+	config := GetConfig()
+	token := config.TelegramBotToken
+	chatID := config.TelegramChatID
 
 	if token != "" && chatID != "" {
 		Bot = &TelegramBot{Token: token, ChatID: chatID}
+	} else {
+		Bot = nil
 	}
 }
 

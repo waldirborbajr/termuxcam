@@ -1,4 +1,4 @@
-package main
+package termuxcam
 
 import (
 	"encoding/json"
@@ -56,7 +56,7 @@ type tgUpdates struct {
 }
 
 // StartTelegramPoller receives commands with long polling (getUpdates). No webhook is needed.
-// Only messages from the configured TG_CHAT_ID are accepted.
+// Only messages from the configured Telegram chat are accepted.
 func StartTelegramPoller() {
 	if Bot == nil {
 		return
@@ -135,7 +135,7 @@ func runCommand(text string) string {
 	case "help", "start":
 		return helpText
 	case "version":
-		return "<b>termuxcam</b> v1.0.0\nGo project for camera capture in Termux"
+		return fmt.Sprintf("<b>termuxcam</b> v%s\nGo project for camera capture in Termux", ProjectVersion)
 	case "status":
 		return html.EscapeString(fmt.Sprint(GetStatus())) + "\n\n" + hintFooter
 	case "system":
@@ -159,7 +159,7 @@ func configCommand(args []string) string {
 	case "get":
 		return html.EscapeString(fmt.Sprint(GetConfig()))
 	case "reload":
-		if err := LoadConfig(resolveBinaryPath(CLI.ConfigFile)); err != nil {
+		if err := LoadConfig(CLI.ConfigFile); err != nil {
 			return errText(err)
 		}
 		return "configuration reloaded"
@@ -262,33 +262,42 @@ func systemStatusText() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("📱 <b>System status</b>\n" + rule + "\n")
+	writeLine := func(line string) {
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	writeLine("📱 <b>System status</b>")
+	writeLine(rule)
 
 	sb.WriteString("📱 <b>Device</b>\n")
-	sb.WriteString(row("Model", orUnknown(info.DeviceModel)) + "\n")
-	sb.WriteString(row("Android", fmt.Sprintf("%s (API %d)", orUnknown(info.AndroidVersion), info.APILevel)) + "\n")
-	sb.WriteString(row("Termux", termux) + "\n")
-	sb.WriteString(row("Architecture", info.CPUArch) + "\n")
-	sb.WriteString(row("CPU cores", strconv.Itoa(info.CPUCores)) + "\n\n")
+	writeLine(row("Model", orUnknown(info.DeviceModel)))
+	writeLine(row("Android", fmt.Sprintf("%s (API %d)", orUnknown(info.AndroidVersion), info.APILevel)))
+	writeLine(row("Termux", termux))
+	writeLine(row("Architecture", info.CPUArch))
+	writeLine(row("CPU cores", strconv.Itoa(info.CPUCores)))
+	sb.WriteByte('\n')
 
 	sb.WriteString("⏱ <b>Runtime</b>\n")
-	sb.WriteString(row("Uptime", cleanUptime(info.Uptime)) + "\n")
-	sb.WriteString(row("Checked", info.Timestamp.Format("02/01/2006 15:04:05")) + "\n\n")
+	writeLine(row("Uptime", cleanUptime(info.Uptime)))
+	writeLine(row("Checked", info.Timestamp.Format("02/01/2006 15:04:05")))
+	sb.WriteByte('\n')
 
 	sb.WriteString("💾 <b>Resources</b>\n")
-	sb.WriteString(row("Memory", fmt.Sprintf("%s total, %s free", info.MemoryTotal, info.MemoryFree)) + "\n")
-	sb.WriteString(row("Storage", fmt.Sprintf("%s total, %s free", info.StorageTotal, info.StorageFree)) + "\n")
-	sb.WriteString(row("Battery", fmt.Sprintf("%d%% (%s)", info.BatteryLevel, orUnknown(info.BatteryStatus))) + "\n\n")
+	writeLine(row("Memory", fmt.Sprintf("%s total, %s free", info.MemoryTotal, info.MemoryFree)))
+	writeLine(row("Storage", fmt.Sprintf("%s total, %s free", info.StorageTotal, info.StorageFree)))
+	writeLine(row("Battery", fmt.Sprintf("%d%% (%s)", info.BatteryLevel, orUnknown(info.BatteryStatus))))
+	sb.WriteByte('\n')
 
 	sb.WriteString("📷 <b>Cameras</b>\n")
 	if len(info.Cameras) == 0 {
 		sb.WriteString("• none detected\n")
 	}
 	for _, cam := range info.Cameras {
-		sb.WriteString(row("ID "+cam.ID, cam.Facing) + "\n")
+		writeLine(row("ID "+cam.ID, cam.Facing))
 	}
 
-	sb.WriteString("\n" + hintFooter)
+	sb.WriteByte('\n')
+	sb.WriteString(hintFooter)
 	return sb.String()
 }
 

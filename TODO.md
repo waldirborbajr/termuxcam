@@ -9,7 +9,7 @@
 
 - [x] Periodic capture with `termux-camera-photo`
 - [x] Telegram photo upload (`sendPhoto`)
-- [x] Configuration through `termuxcam.conf`
+- [x] Configuration through `termuxcam.toml`
 - [x] In-memory status counters and uptime
 - [x] CLI commands for status, configuration, manual capture, and flashlight control
 - [ ] Motion detection, heartbeat notifications, and persistent state
@@ -22,7 +22,7 @@
 ### 1. Stability and resilience (high priority)
 - [ ] **Retry queue**: Retry failed photo uploads before capturing a new image.
 - [ ] **Automatic disk cleanup**: Rotate or delete old files when `camera_captures` reaches a limit (for example, 2 GB or 7 days).
-- [ ] **Configuration hot reload**: Reload `termuxcam.conf` on SIGHUP without restarting the process.
+- [ ] **Configuration hot reload**: Reload `termuxcam.toml` on SIGHUP without restarting the process.
 - [ ] **Improved error handling**: Notify Telegram after repeated failures.
 
 ### 2. Intelligence and detection (medium/high priority)

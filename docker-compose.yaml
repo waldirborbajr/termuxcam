@@ -5,13 +5,9 @@ services:
     build: .
     container_name: termuxcam
     restart: unless-stopped
-    environment:
-      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
-      - TG_CHAT_ID=${TG_CHAT_ID}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
     volumes:
       - ./data:/data/camera_captures
-      - ./config:/config
+      - ./termuxcam.toml:/usr/local/bin/termuxcam.toml:ro
     ports:
       - "8080:8080"
     command: ["start", "--daemon", "--port=8080"]
