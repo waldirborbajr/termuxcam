@@ -1,3 +1,3 @@
 package termuxcam
 
-const ProjectVersion = "1.0.0"
+const ProjectVersion = "0.3.0"
