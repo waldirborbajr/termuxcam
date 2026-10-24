@@ -78,9 +78,7 @@ func Daemonize(logFile, configFile string, port int) error {
 	cmd.Stdin = nil
 	cmd.Stdout = logFd
 	cmd.Stderr = logFd
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true, // new session, detached from the terminal
-	}
+	configureDaemonProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
 		logFd.Close()
