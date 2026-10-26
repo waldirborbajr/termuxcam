@@ -10,4 +10,4 @@ services:
       - ./termuxcam.toml:/usr/local/bin/termuxcam.toml:ro
     ports:
       - "8080:8080"
-    command: ["start", "--daemon", "--port=8080"]
+    command: [ "start", "--port=8080" ]

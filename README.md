@@ -381,7 +381,7 @@ cat <<'EOF' > ~/.termux/service/termuxcam/run
 export HOME=/data/data/com.termux/files/home
 export PATH=/data/data/com.termux/files/usr/bin:$PATH
 
-exec "$HOME/bins/termuxcam" start --daemon \
+exec "$HOME/bins/termuxcam" start \
   --config-file "$HOME/bins/termuxcam.toml"
 EOF
 ```
@@ -426,6 +426,26 @@ Check:
 
 ```sh
 sv status termuxcam
+```
+
+To verify automatic recovery, run this controlled test while no capture is
+in progress. It kills the service process once; `runit` should start it again
+with a different PID:
+
+```sh
+old_pid=$(sv status termuxcam | sed -n 's/.*(pid \([0-9][0-9]*\)).*/\1/p')
+test -n "$old_pid" || { echo "termuxcam is not running"; exit 1; }
+kill -KILL "$old_pid"
+
+for attempt in $(seq 1 10); do
+  new_pid=$(sv status termuxcam | sed -n 's/.*(pid \([0-9][0-9]*\)).*/\1/p')
+  if test -n "$new_pid" && test "$new_pid" != "$old_pid"; then
+    echo "termuxcam restarted: $old_pid -> $new_pid"
+    break
+  fi
+  sleep 1
+done
+test -n "$new_pid" && test "$new_pid" != "$old_pid"
 ```
 
 ------------------------------------------------------------------------

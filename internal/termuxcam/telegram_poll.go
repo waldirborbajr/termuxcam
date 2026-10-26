@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -22,6 +23,8 @@ var captureMu sync.Mutex
 
 const pollTimeoutSecs = 30
 
+const logTailBytes = 600
+
 const rule = "━━━━━━━━━━━━━━━━━━━━"
 
 const hintFooter = "ℹ️ Send /help for more commands."
@@ -34,6 +37,7 @@ const helpText = `<b>termuxcam commands</b>
 /config set key=value - change a setting
 /config reload - reload the configuration file
 /capture [camera] [burst] - take photos (camera: -1 front, 0 back, 1 front; burst: 1-5)
+/log - send the latest log output
 /torch on|off - flashlight
 /help - this message`
 
@@ -61,7 +65,28 @@ func StartTelegramPoller() {
 	if Bot == nil {
 		return
 	}
-	go pollLoop()
+	go supervisePollLoop()
+}
+
+func supervisePollLoop() {
+	for {
+		if !runPollLoop() {
+			return
+		}
+		log.Println("Telegram poller stopped after panic; restarting")
+		time.Sleep(time.Second)
+	}
+}
+
+func runPollLoop() (panicked bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("Telegram poller panic: %v", recovered)
+			panicked = true
+		}
+	}()
+	pollLoop()
+	return false
 }
 
 func pollLoop() {
@@ -144,6 +169,8 @@ func runCommand(text string) string {
 		return configCommand(args)
 	case "capture":
 		return captureCommand(args)
+	case "log":
+		return logCommand()
 	case "torch":
 		return torchCommand(args)
 	default:
@@ -203,9 +230,23 @@ func captureCommand(args []string) string {
 		cameraID, label = BackCameraHWID, "Back"
 	}
 
-	captureMu.Lock()
-	defer captureMu.Unlock()
+	if !captureMu.TryLock() {
+		return "another capture is already in progress"
+	}
+	go func() {
+		defer captureMu.Unlock()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("Telegram capture panic: %v", recovered)
+				sendText("capture failed unexpectedly")
+			}
+		}()
+		sendText(runCapture(cameraID, label, burst))
+	}()
+	return "capture started; the result will be sent when it finishes"
+}
 
+func runCapture(cameraID, label string, burst int) string {
 	files, captureErr := CaptureBurst(cameraID, burst)
 	sent, failed := 0, 0
 	for _, f := range files {
@@ -238,6 +279,33 @@ func captureCommand(args []string) string {
 			html.EscapeString(captureErr.Error()), sent, failed)
 	}
 	return fmt.Sprintf("sent %d photo(s), %d failed", sent, failed)
+}
+
+func logCommand() string {
+	file, err := os.Open(resolveBinaryPath(CLI.LogFile))
+	if err != nil {
+		return "log file unavailable: " + html.EscapeString(err.Error())
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return "cannot read log file: " + html.EscapeString(err.Error())
+	}
+	if info.Size() > logTailBytes {
+		if _, err := file.Seek(-logTailBytes, io.SeekEnd); err != nil {
+			return "cannot read log file: " + html.EscapeString(err.Error())
+		}
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, logTailBytes))
+	if err != nil {
+		return "cannot read log file: " + html.EscapeString(err.Error())
+	}
+	text := strings.ToValidUTF8(string(contents), "�")
+	if info.Size() > logTailBytes {
+		text = "...\n" + text
+	}
+	return "<b>Latest logs</b>\n<pre>" + html.EscapeString(text) + "</pre>"
 }
 
 func torchCommand(args []string) string {
