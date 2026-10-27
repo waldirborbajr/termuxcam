@@ -17,11 +17,14 @@ var (
 	ConfigMu  sync.RWMutex
 )
 
+const defaultRasplabEndpoint = "https://192.168.1.15:8443/rasplab"
+
 type Config struct {
 	CaptureInterval  time.Duration `toml:"capture"`
 	CameraMode       int           `toml:"camera"`
 	BurstCount       int           `toml:"burst"`
 	KeepLogsDays     int           `toml:"logs_days"`
+	RasplabEndpoint  string        `toml:"rasplab_endpoint"`
 	TelegramBotToken string        `toml:"tg_bot_token" json:"-"`
 	TelegramChatID   string        `toml:"tg_chat_id" json:"-"`
 	EncryptionKey    string        `toml:"encryption_key" json:"-"`
@@ -30,11 +33,12 @@ type Config struct {
 
 func (c Config) String() string {
 	return fmt.Sprintf(
-		"{CaptureInterval:%s CameraMode:%d BurstCount:%d KeepLogsDays:%d TelegramConfigured:%t EncryptionEnabled:%t Debug:%t}",
+		"{CaptureInterval:%s CameraMode:%d BurstCount:%d KeepLogsDays:%d RasplabEndpoint:%s TelegramConfigured:%t EncryptionEnabled:%t Debug:%t}",
 		c.CaptureInterval,
 		c.CameraMode,
 		c.BurstCount,
 		c.KeepLogsDays,
+		c.RasplabEndpoint,
 		c.TelegramBotToken != "" && c.TelegramChatID != "",
 		c.EncryptionKey != "",
 		c.Debug,
@@ -51,6 +55,7 @@ func LoadConfig(configFile string) error {
 		CameraMode:      1,
 		BurstCount:      1,
 		KeepLogsDays:    3,
+		RasplabEndpoint: defaultRasplabEndpoint,
 	}
 
 	data, err := os.ReadFile(configFile)
@@ -66,15 +71,17 @@ func LoadConfig(configFile string) error {
 		Camera           int    `toml:"camera"`
 		Burst            int    `toml:"burst"`
 		LogsDays         int    `toml:"logs_days"`
+		RasplabEndpoint  string `toml:"rasplab_endpoint"`
 		TelegramBotToken string `toml:"tg_bot_token"`
 		TelegramChatID   string `toml:"tg_chat_id"`
 		EncryptionKey    string `toml:"encryption_key"`
 		Debug            bool   `toml:"debug"`
 	}{
-		Capture:  "5m",
-		Camera:   1,
-		Burst:    1,
-		LogsDays: 3,
+		Capture:         "5m",
+		Camera:          1,
+		Burst:           1,
+		LogsDays:        3,
+		RasplabEndpoint: defaultRasplabEndpoint,
 	}
 
 	if err := toml.Unmarshal(data, &parsed); err != nil {
@@ -94,6 +101,7 @@ func LoadConfig(configFile string) error {
 	}
 	AppConfig.TelegramBotToken = parsed.TelegramBotToken
 	AppConfig.TelegramChatID = parsed.TelegramChatID
+	AppConfig.RasplabEndpoint = parsed.RasplabEndpoint
 	AppConfig.EncryptionKey = parsed.EncryptionKey
 	AppConfig.Debug = parsed.Debug
 	return nil
@@ -159,6 +167,7 @@ func saveConfig(config Config) error {
 		Camera           int    `toml:"camera"`
 		Burst            int    `toml:"burst"`
 		LogsDays         int    `toml:"logs_days"`
+		RasplabEndpoint  string `toml:"rasplab_endpoint"`
 		TelegramBotToken string `toml:"tg_bot_token"`
 		TelegramChatID   string `toml:"tg_chat_id"`
 		EncryptionKey    string `toml:"encryption_key"`
@@ -168,6 +177,7 @@ func saveConfig(config Config) error {
 		Camera:           config.CameraMode,
 		Burst:            config.BurstCount,
 		LogsDays:         config.KeepLogsDays,
+		RasplabEndpoint:  config.RasplabEndpoint,
 		TelegramBotToken: config.TelegramBotToken,
 		TelegramChatID:   config.TelegramChatID,
 		EncryptionKey:    config.EncryptionKey,

@@ -2,6 +2,9 @@
 tg_bot_token = ""
 tg_chat_id = ""
 
+# HTTPS endpoint used by the /rasplab Telegram command
+rasplab_endpoint = "https://192.168.1.15:8443/rasplab"
+
 # Optional 16, 24, or 32-byte AES key. Leave empty to disable encryption.
 encryption_key = ""
 

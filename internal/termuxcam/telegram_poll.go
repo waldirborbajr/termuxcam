@@ -1,6 +1,8 @@
 package termuxcam
 
 import (
+	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -25,6 +27,8 @@ const pollTimeoutSecs = 30
 
 const logTailBytes = 600
 
+const rasplabMaxResponseBytes = 3500
+
 const rule = "━━━━━━━━━━━━━━━━━━━━"
 
 const hintFooter = "ℹ️ Send /help for more commands."
@@ -36,6 +40,7 @@ const helpText = `<b>termuxcam commands</b>
 /config - show configuration
 /config set key=value - change a setting
 /config reload - reload the configuration file
+/rasplab - Raspberry Pi information
 /capture [camera] [burst] - take photos (camera: -1 front, 0 back, 1 front; burst: 1-5)
 /log - send the latest log output
 /torch on|off - flashlight
@@ -165,6 +170,8 @@ func runCommand(text string) string {
 		return html.EscapeString(fmt.Sprint(GetStatus())) + "\n\n" + hintFooter
 	case "system":
 		return systemStatusText()
+	case "rasplab":
+		return rasplabCommand()
 	case "config":
 		return configCommand(args)
 	case "capture":
@@ -176,6 +183,60 @@ func runCommand(text string) string {
 	default:
 		return "Unknown command.\n" + hintFooter
 	}
+}
+
+func rasplabCommand() string {
+	endpoint := GetConfig().RasplabEndpoint
+	parsedEndpoint, err := url.ParseRequestURI(endpoint)
+	if err != nil || parsedEndpoint.Scheme != "https" || parsedEndpoint.Host == "" {
+		return "rasplab endpoint must be a valid HTTPS URL"
+	}
+
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "rasplab request failed: " + html.EscapeString(err.Error())
+	}
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: true,
+			},
+		},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "rasplab request failed: " + html.EscapeString(err.Error())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("rasplab API returned HTTP %d", resp.StatusCode)
+	}
+
+	const maxResponseBytes = 64 * 1024
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return "could not read rasplab response: " + html.EscapeString(err.Error())
+	}
+	if len(body) > maxResponseBytes {
+		return "rasplab response is too large"
+	}
+
+	var formatted bytes.Buffer
+	if err := json.Indent(&formatted, body, "", "  "); err != nil {
+		return "rasplab API returned invalid JSON: " + html.EscapeString(err.Error())
+	}
+	result := html.EscapeString(formatted.String())
+	if len(result) > rasplabMaxResponseBytes {
+		return "rasplab response is too large to send to Telegram"
+	}
+	return "<pre>" + result + "</pre>"
 }
 
 func configCommand(args []string) string {

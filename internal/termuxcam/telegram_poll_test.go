@@ -1,11 +1,46 @@
 package termuxcam
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRasplabCommandFetchesAndEscapesJSON(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok","label":"<sensor>"}`))
+	}))
+	defer server.Close()
+
+	setTestConfig(t, Config{RasplabEndpoint: server.URL})
+	got := rasplabCommand()
+	if !strings.Contains(got, "<pre>") || !strings.Contains(got, "&lt;sensor&gt;") {
+		t.Fatalf("rasplabCommand() = %q, want escaped JSON in a preformatted message", got)
+	}
+}
+
+func TestRasplabCommandRejectsInvalidEndpointAndJSON(t *testing.T) {
+	setTestConfig(t, Config{RasplabEndpoint: "http://localhost/rasplab"})
+	if got := rasplabCommand(); got != "rasplab endpoint must be a valid HTTPS URL" {
+		t.Fatalf("rasplabCommand() = %q, want invalid HTTPS endpoint response", got)
+	}
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer server.Close()
+
+	ConfigMu.Lock()
+	AppConfig.RasplabEndpoint = server.URL
+	ConfigMu.Unlock()
+	if got := rasplabCommand(); !strings.HasPrefix(got, "rasplab API returned invalid JSON:") {
+		t.Fatalf("rasplabCommand() = %q, want invalid JSON response", got)
+	}
+}
 
 func TestCaptureCommandReturnsWhenCaptureIsBusy(t *testing.T) {
 	captureMu.Lock()

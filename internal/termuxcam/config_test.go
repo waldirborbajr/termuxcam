@@ -16,6 +16,7 @@ burst = 4
 logs_days = 7
 tg_bot_token = "bot-token"
 tg_chat_id = "12345"
+rasplab_endpoint = "https://raspi.local:8443/rasplab"
 encryption_key = "0123456789abcdef"
 debug = true
 `
@@ -36,6 +37,9 @@ debug = true
 	}
 	if config.TelegramBotToken != "bot-token" || config.TelegramChatID != "12345" {
 		t.Errorf("Telegram credentials were not loaded: %+v", config)
+	}
+	if config.RasplabEndpoint != "https://raspi.local:8443/rasplab" {
+		t.Errorf("Rasplab endpoint = %q, want configured endpoint", config.RasplabEndpoint)
 	}
 	if config.EncryptionKey != "0123456789abcdef" || !config.Debug {
 		t.Errorf("encryption/debug settings were not loaded: %+v", config)
@@ -69,6 +73,7 @@ func TestSaveConfigRoundTripsTOML(t *testing.T) {
 		KeepLogsDays:     9,
 		TelegramBotToken: "bot-token",
 		TelegramChatID:   "12345",
+		RasplabEndpoint:  "https://raspi.local:8443/rasplab",
 		EncryptionKey:    "0123456789abcdef",
 		Debug:            true,
 	}
@@ -93,6 +98,19 @@ func TestSaveConfigRoundTripsTOML(t *testing.T) {
 	}
 	if gotMode := info.Mode().Perm(); gotMode != 0600 {
 		t.Errorf("config file mode = %04o, want 0600", gotMode)
+	}
+}
+
+func TestLoadConfigUsesDefaultRasplabEndpoint(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "termuxcam.toml")
+	if err := os.WriteFile(configFile, []byte("camera = 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadConfig(configFile); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetConfig().RasplabEndpoint; got != defaultRasplabEndpoint {
+		t.Errorf("Rasplab endpoint = %q, want default %q", got, defaultRasplabEndpoint)
 	}
 }
 
