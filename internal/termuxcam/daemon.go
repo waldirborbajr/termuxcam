@@ -67,7 +67,7 @@ func Daemonize(logFile, configFile string, port int) error {
 	}
 
 	args := []string{
-		"start", "--daemon",
+		"start",
 		"--port", strconv.Itoa(port),
 		"--log-file", logFile,
 		"--config-file", configFile,

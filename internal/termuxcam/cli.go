@@ -36,7 +36,7 @@ type StartCmd struct {
 }
 
 func (s *StartCmd) Run(ctx *kong.Context) error {
-	return runServiceManager("up")
+	return Daemonize(CLI.LogFile, CLI.ConfigFile, s.Port)
 }
 
 // ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ func (s *StartCmd) Run(ctx *kong.Context) error {
 type StopCmd struct{}
 
 func (s *StopCmd) Run(ctx *kong.Context) error {
-	return runServiceManager("down")
+	return StopDaemon()
 }
 
 type LogCmd struct{}
@@ -63,13 +63,17 @@ type RestartCmd struct {
 }
 
 func (s *RestartCmd) Run(ctx *kong.Context) error {
-	return runServiceManager("restart")
+	if err := StopDaemon(); err != nil {
+		return fmt.Errorf("stop daemon before restart: %w", err)
+	}
+	return Daemonize(CLI.LogFile, CLI.ConfigFile, s.Port)
 }
 
 type StatusCmd struct{}
 
 func (s *StatusCmd) Run(ctx *kong.Context) error {
-	return runServiceManager("status")
+	fmt.Println(DaemonStatusString())
+	return nil
 }
 
 type RunCmd struct {
@@ -91,18 +95,6 @@ func (r *RunCmd) Run(ctx *kong.Context) error {
 		go StartAPIServer(r.Port)
 	}
 	RunDaemon()
-	return nil
-}
-
-func runServiceManager(action string) error {
-	cmd := exec.Command("sv", action, "termuxcam")
-	output, err := cmd.CombinedOutput()
-	if len(output) > 0 {
-		fmt.Print(string(output))
-	}
-	if err != nil {
-		return fmt.Errorf("sv %s termuxcam: %w", action, err)
-	}
 	return nil
 }
 

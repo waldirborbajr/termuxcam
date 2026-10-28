@@ -239,14 +239,14 @@ go build -o build/termuxcam ./cmd/termuxcam
 Copy it to the binary directory used for installation:
 
 ```sh
-mkdir -p ~/bins
-cp build/termuxcam ~/bins/termuxcam
+mkdir -p ~/termuxcam
+cp build/termuxcam ~/termuxcam/termuxcam
 ```
 
 Verify:
 
 ```sh
-ls -lh ~/bins/termuxcam
+ls -lh ~/termuxcam/termuxcam
 ```
 
 ------------------------------------------------------------------------
@@ -255,7 +255,7 @@ ls -lh ~/bins/termuxcam
 
 `termuxcam` prefers the current working directory for relative paths when a
 matching file already exists there, and falls back to the executable's
-directory otherwise (`~/bins/`, if you followed step 7). Use
+directory otherwise (`~/termuxcam/`, if you followed step 7). Use
 `--config-file` to select a different path; relative paths follow the same
 resolution rules.
 
@@ -263,11 +263,11 @@ The application uses built-in defaults if the file is missing. Copy
 the sample configuration and edit it:
 
 ```sh
-cp -n termuxcam.toml ~/bins/termuxcam.toml
-chmod 600 ~/bins/termuxcam.toml
+cp -n termuxcam.toml ~/termuxcam/termuxcam.toml
+chmod 600 ~/termuxcam/termuxcam.toml
 ```
 
-Set `tg_bot_token` and `tg_chat_id` in `~/bins/termuxcam.toml` before
+Set `tg_bot_token` and `tg_chat_id` in `~/termuxcam/termuxcam.toml` before
 starting the capture service. The TOML file also replaces the old
 `.env` and `termuxcam.conf` settings.
 
@@ -306,18 +306,18 @@ sv restart termuxcam
 # 9. Test Manually
 
 ```sh
-~/bins/termuxcam start
+~/termuxcam/termuxcam run
 ```
 
 Confirm the photo (or photos, if `camera=2`) arrives in Telegram with
-the expected caption (`Front camera` / `Back camera`), then
-`Ctrl+C` to stop.
+the expected caption (`Front camera` / `Back camera`), then press
+`Ctrl+C` to stop the foreground process.
 
 Control the flashlight from the command line with:
 
 ```sh
-~/bins/termuxcam torch on
-~/bins/termuxcam torch off
+~/termuxcam/termuxcam torch on
+~/termuxcam/termuxcam torch off
 ```
 
 The `torch` command requires the `termux-api` package and the Termux:API
@@ -334,11 +334,27 @@ error in a log file instead of showing it directly in your terminal.
 The CLI can start and manage a background daemon directly:
 
 ```sh
-~/bins/termuxcam start --daemon
-~/bins/termuxcam status
-~/bins/termuxcam restart
-~/bins/termuxcam stop
+~/termuxcam/termuxcam start
+~/termuxcam/termuxcam status
+~/termuxcam/termuxcam restart
+~/termuxcam/termuxcam stop
 ```
+
+`start` always launches the daemon in the background. Use `run` only when
+you need the service to stay in the foreground, such as under runit.
+
+For a start command that prefers `termux-services` when `sv` is installed
+and falls back to the detached daemon when it is not, install and run the
+helper script:
+
+```sh
+cp start-termuxcam.sh ~/termuxcam/
+sh ~/termuxcam/start-termuxcam.sh
+```
+
+Set `TERMUXCAM_BIN` or `TERMUXCAM_CONFIG` to override the default binary
+or configuration path. When `sv` is unavailable, `~/termuxcam/termuxcam start`,
+`status`, `restart`, and `stop` also use the daemon directly.
 
 The default configuration path remains relative to the executable. Supply
 `--config-file` to choose another file; relative paths are resolved from
@@ -389,8 +405,8 @@ cat <<'EOF' > ~/.termux/service/termuxcam/run
 export HOME=/data/data/com.termux/files/home
 export PATH=/data/data/com.termux/files/usr/bin:$PATH
 
-exec "$HOME/bins/termuxcam" start \
-  --config-file "$HOME/bins/termuxcam.toml"
+exec "$HOME/termuxcam/termuxcam" run \
+  --config-file "$HOME/termuxcam/termuxcam.toml"
 EOF
 ```
 
@@ -464,7 +480,7 @@ Application log (includes the loaded config on every startup, e.g.
 `Config loaded -> interval=5m0s | cameraMode=1 | burst=1 | config=...`):
 
 ```sh
-tail -f ~/bins/camera_captures/capture.log
+tail -f ~/termuxcam/camera_captures/capture.log
 ```
 
 Service output:
@@ -504,7 +520,7 @@ discards empty files. If captures routinely need longer, adjust
 Clean up any pre-existing empty files:
 
 ```sh
-find ~/bins/camera_captures -name "*.jpg" -size 0 -delete
+find ~/termuxcam/camera_captures -name "*.jpg" -size 0 -delete
 ```
 
 ## Photos are labeled with the wrong camera, or `camera=1` captures the wrong physical camera
@@ -540,7 +556,7 @@ can't find the binary, the `run` script may not be exporting `PATH` (or
 
 ## Telegram credentials not configured
 
-Set `tg_bot_token` and `tg_chat_id` in `~/bins/termuxcam.toml`.
+Set `tg_bot_token` and `tg_chat_id` in `~/termuxcam/termuxcam.toml`.
 
 Restart:
 
@@ -551,7 +567,7 @@ sv restart termuxcam
 ## Config changes don't seem to apply
 
 The config file is only read once, at process startup. After editing
-`~/bins/termuxcam.toml`, restart the service:
+`~/termuxcam/termuxcam.toml`, restart the service:
 
 ```sh
 sv restart termuxcam

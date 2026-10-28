@@ -35,7 +35,7 @@ test:
     go test -v ./...
 
 start:
-    ./build/termuxcam start --daemon
+    ./build/termuxcam start
 
 stop:
     ./build/termuxcam stop

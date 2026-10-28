@@ -25,7 +25,7 @@
 
 ## Running the Service
 
-- `just start` invokes the built binary with `start --daemon` for manual background execution.
+- `just start` invokes the built binary with `start` for manual background execution.
 - For `termux-services`/runit supervision, run `termuxcam start` in the foreground so the supervisor can detect and restart process exits. Keep the service run script aligned with the README.
 - Docker Compose also uses a foreground process with its restart policy enabled.
 - Do not treat the daemon PID/status check as a substitute for the Termux service manager's `sv status`.

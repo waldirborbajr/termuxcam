@@ -56,7 +56,6 @@ func Run() {
 func runDaemonChild() {
 	var child struct {
 		Start      struct{} `cmd:""`
-		Daemon     bool     `help:"internal"`
 		Port       int      `help:"port" default:"8080"`
 		LogFile    string   `help:"log"`
 		ConfigFile string   `help:"config"`
