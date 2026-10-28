@@ -11,9 +11,11 @@ import (
 
 var CLI struct {
 	Start   StartCmd   `cmd:"" help:"Start the capture service"`
-	Stop    StopCmd    `cmd:"" help:"Stop the background daemon"`
-	Restart RestartCmd `cmd:"" help:"Restart the background daemon"`
+	Stop    StopCmd    `cmd:"" help:"Stop the capture service"`
+	Log     LogCmd     `cmd:"" help:"Follow the capture log"`
+	Restart RestartCmd `cmd:"" help:"Restart the capture service"`
 	Status  StatusCmd  `cmd:"" help:"Show service status"`
+	Run     RunCmd     `cmd:"" hidden:""`
 	Config  ConfigCmd  `cmd:"" help:"Manage configuration"`
 	Capture CaptureCmd `cmd:"" help:"Capture photos manually"`
 	Torch   TorchCmd   `cmd:"" help:"Turn the flashlight on or off"`
@@ -30,33 +32,11 @@ var CLI struct {
 // ---------------------------------------------------------------------------
 
 type StartCmd struct {
-	Daemon bool `help:"Run as a background daemon"`
-	Port   int  `help:"HTTP API port" default:"8080"`
+	Port int `help:"HTTP API port" default:"8080"`
 }
 
 func (s *StartCmd) Run(ctx *kong.Context) error {
-	if s.Daemon {
-		return Daemonize(CLI.LogFile, CLI.ConfigFile, s.Port)
-	}
-
-	log.Println("Starting termuxcam (foreground)...")
-
-	if err := LoadConfig(CLI.ConfigFile); err != nil {
-		return fmt.Errorf("load configuration: %w", err)
-	}
-	config := GetConfig()
-	log.Printf("Config loaded -> interval=%s | cameraMode=%d | burst=%d | config=%s",
-		config.CaptureInterval, config.CameraMode, config.BurstCount, resolveBinaryPath(CLI.ConfigFile))
-
-	InitBot()
-	StartTelegramPoller()
-
-	if s.Port > 0 {
-		go StartAPIServer(s.Port)
-	}
-
-	RunDaemon() // blocks forever; use Ctrl+C in foreground
-	return nil
+	return runServiceManager("up")
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +46,16 @@ func (s *StartCmd) Run(ctx *kong.Context) error {
 type StopCmd struct{}
 
 func (s *StopCmd) Run(ctx *kong.Context) error {
-	return StopDaemon()
+	return runServiceManager("down")
+}
+
+type LogCmd struct{}
+
+func (l *LogCmd) Run(ctx *kong.Context) error {
+	cmd := exec.Command("tail", "-f", resolveBinaryPath(CLI.LogFile))
+	cmd.Stdout = ctx.Stdout
+	cmd.Stderr = ctx.Stderr
+	return cmd.Run()
 }
 
 type RestartCmd struct {
@@ -74,17 +63,46 @@ type RestartCmd struct {
 }
 
 func (s *RestartCmd) Run(ctx *kong.Context) error {
-	if err := StopDaemon(); err != nil {
-		log.Printf("stop during restart: %v", err)
-	}
-	return Daemonize(CLI.LogFile, CLI.ConfigFile, s.Port)
+	return runServiceManager("restart")
 }
 
 type StatusCmd struct{}
 
 func (s *StatusCmd) Run(ctx *kong.Context) error {
-	fmt.Println(GetStatus())
-	fmt.Println(DaemonStatusString())
+	return runServiceManager("status")
+}
+
+type RunCmd struct {
+	Port int `help:"HTTP API port" default:"8080"`
+}
+
+func (r *RunCmd) Run(ctx *kong.Context) error {
+	log.Println("Starting termuxcam in foreground...")
+	if err := LoadConfig(CLI.ConfigFile); err != nil {
+		return fmt.Errorf("load configuration: %w", err)
+	}
+	config := GetConfig()
+	log.Printf("Config loaded -> interval=%s | cameraMode=%d | burst=%d | config=%s",
+		config.CaptureInterval, config.CameraMode, config.BurstCount, resolveBinaryPath(CLI.ConfigFile))
+
+	InitBot()
+	StartTelegramPoller()
+	if r.Port > 0 {
+		go StartAPIServer(r.Port)
+	}
+	RunDaemon()
+	return nil
+}
+
+func runServiceManager(action string) error {
+	cmd := exec.Command("sv", action, "termuxcam")
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		fmt.Print(string(output))
+	}
+	if err != nil {
+		return fmt.Errorf("sv %s termuxcam: %w", action, err)
+	}
 	return nil
 }
 
