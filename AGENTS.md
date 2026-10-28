@@ -23,6 +23,14 @@
 - Do not assume camera IDs are the same across Android devices.
 - Separate unit-testable logic from operations requiring an Android device or Termux:API; report when device-level validation was not possible.
 
+## Change Discipline
+
+- Before implementing, state assumptions and surface ambiguity. If multiple interpretations are plausible or a key detail is unclear, explain the options and ask before choosing.
+- Prefer the simplest solution that satisfies the request. Do not add unrequested features, abstractions, configurability, or speculative error handling.
+- Make surgical changes: touch only what the task requires, preserve existing style, and avoid unrelated cleanup or refactoring. Remove only unused code made obsolete by your own changes.
+- Define concrete success criteria for each task and verify them. For behavior changes, add or update focused tests; for other changes, run the narrowest relevant check and report anything that could not be verified.
+- For multi-step work, state a brief plan with a verification check for each step, then continue until the criteria are met.
+
 ## Running the Service
 
 - `just start` invokes the built binary with `start` for manual background execution.
