@@ -234,6 +234,8 @@ func rasplabCommand() string {
 		MemoryUsedMB          *int64   `json:"memory_used_mb"`
 		MemoryTotalMB         *int64   `json:"memory_total_mb"`
 		UptimeSeconds         *int64   `json:"uptime_seconds"`
+		IP                    string   `json:"ip"`
+		Hostname              string   `json:"hostname"`
 	}
 	if err := json.Unmarshal(body, &telemetry); err != nil {
 		return "rasplab API returned invalid JSON: " + html.EscapeString(err.Error())
@@ -247,11 +249,13 @@ func rasplabCommand() string {
 	memoryUsed := formatRasplabMemory(telemetry.MemoryUsedMB)
 	memoryTotal := formatRasplabMemory(telemetry.MemoryTotalMB)
 	uptime := formatRasplabUptime(telemetry.UptimeSeconds)
+	ip := html.EscapeString(orUnknown(telemetry.IP))
+	hostname := html.EscapeString(orUnknown(telemetry.Hostname))
 
 	result := fmt.Sprintf(
-		"📊 <b>%s v%s — telemetry</b>\n🌡 CPU temp: <code>%s</code>\n🧠 RAM: <code>%s MB / %s MB</code>\n⏱ Uptime: <code>%s</code>",
+		"📊 <b>%s v%s — telemetry</b>\n🌡 CPU temp: <code>%s</code>\n🧠 RAM: <code>%s MB / %s MB</code>\n⏱ Uptime: <code>%s</code>\n🌐 IP: <code>%s</code>\n🖥 Hostname: <code>%s</code>",
 		name, version, html.EscapeString(cpuTemperature), html.EscapeString(memoryUsed),
-		html.EscapeString(memoryTotal), html.EscapeString(uptime),
+		html.EscapeString(memoryTotal), html.EscapeString(uptime), ip, hostname,
 	)
 	if len(result) > rasplabMaxResponseBytes {
 		return "rasplab response is too large to send to Telegram"

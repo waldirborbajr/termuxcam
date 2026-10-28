@@ -287,9 +287,10 @@ TOML comments start with `#`. Malformed TOML is reported as a
 configuration error.
 
 The `/rasplab` Telegram command fetches JSON from `rasplab_endpoint` and
-displays the device name and version, CPU temperature, memory usage, and
-uptime in a compact status message. The endpoint must use HTTPS and return
-a JSON response small enough to fit in one Telegram message. Because its
+displays all telemetry fields in a compact status message: device name,
+version, CPU temperature, memory usage, uptime, IP address, and hostname.
+The endpoint must use HTTPS and return a JSON response small enough to fit
+in one Telegram message. Because its
 self-signed certificate is accepted without CA verification, configure
 only an endpoint you trust on your network.
 

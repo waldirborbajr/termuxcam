@@ -12,7 +12,7 @@ import (
 func TestRasplabCommandFormatsTelemetryAndEscapesHTML(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"name":"rasp<lab>","version":"0.1.0","cpu_temperature_celsius":47.236,"memory_used_mb":742,"memory_total_mb":905,"uptime_seconds":2790654}`))
+		_, _ = w.Write([]byte(`{"name":"rasp<lab>","version":"0.1.0","cpu_temperature_celsius":47.236,"memory_used_mb":742,"memory_total_mb":905,"uptime_seconds":2790654,"ip":"192.168.1.15","hostname":"rasp<lab>"}`))
 	}))
 	defer server.Close()
 
@@ -23,6 +23,8 @@ func TestRasplabCommandFormatsTelemetryAndEscapesHTML(t *testing.T) {
 		"🌡 CPU temp: <code>47.2 °C</code>",
 		"🧠 RAM: <code>742 MB / 905 MB</code>",
 		"⏱ Uptime: <code>32d 7h 10m</code>",
+		"🌐 IP: <code>192.168.1.15</code>",
+		"🖥 Hostname: <code>rasp&lt;lab&gt;</code>",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("rasplabCommand() = %q, want it to contain %q", got, want)
