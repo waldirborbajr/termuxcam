@@ -1,7 +1,6 @@
 package termuxcam
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -228,15 +227,54 @@ func rasplabCommand() string {
 		return "rasplab response is too large"
 	}
 
-	var formatted bytes.Buffer
-	if err := json.Indent(&formatted, body, "", "  "); err != nil {
+	var telemetry struct {
+		Name                  string   `json:"name"`
+		Version               string   `json:"version"`
+		CPUTemperatureCelsius *float64 `json:"cpu_temperature_celsius"`
+		MemoryUsedMB          *int64   `json:"memory_used_mb"`
+		MemoryTotalMB         *int64   `json:"memory_total_mb"`
+		UptimeSeconds         *int64   `json:"uptime_seconds"`
+	}
+	if err := json.Unmarshal(body, &telemetry); err != nil {
 		return "rasplab API returned invalid JSON: " + html.EscapeString(err.Error())
 	}
-	result := html.EscapeString(formatted.String())
+	name := html.EscapeString(orUnknown(telemetry.Name))
+	version := html.EscapeString(orUnknown(telemetry.Version))
+	cpuTemperature := "unknown"
+	if telemetry.CPUTemperatureCelsius != nil {
+		cpuTemperature = fmt.Sprintf("%.1f °C", *telemetry.CPUTemperatureCelsius)
+	}
+	memoryUsed := formatRasplabMemory(telemetry.MemoryUsedMB)
+	memoryTotal := formatRasplabMemory(telemetry.MemoryTotalMB)
+	uptime := formatRasplabUptime(telemetry.UptimeSeconds)
+
+	result := fmt.Sprintf(
+		"📊 <b>%s v%s — telemetry</b>\n🌡 CPU temp: <code>%s</code>\n🧠 RAM: <code>%s MB / %s MB</code>\n⏱ Uptime: <code>%s</code>",
+		name, version, html.EscapeString(cpuTemperature), html.EscapeString(memoryUsed),
+		html.EscapeString(memoryTotal), html.EscapeString(uptime),
+	)
 	if len(result) > rasplabMaxResponseBytes {
 		return "rasplab response is too large to send to Telegram"
 	}
-	return "<pre>" + result + "</pre>"
+	return result
+}
+
+func formatRasplabMemory(memoryMB *int64) string {
+	if memoryMB == nil || *memoryMB < 0 {
+		return "unknown"
+	}
+	return strconv.FormatInt(*memoryMB, 10)
+}
+
+func formatRasplabUptime(uptimeSeconds *int64) string {
+	if uptimeSeconds == nil || *uptimeSeconds < 0 {
+		return "unknown"
+	}
+
+	days := *uptimeSeconds / 86400
+	hours := (*uptimeSeconds % 86400) / 3600
+	minutes := (*uptimeSeconds % 3600) / 60
+	return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
 }
 
 func configCommand(args []string) string {
