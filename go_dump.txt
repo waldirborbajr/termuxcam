@@ -1,0 +1,3113 @@
+----------
+./cmd/termuxcam/main.go
+package main
+
+import "github.com/waldirborbajr/termuxcam/internal/termuxcam"
+
+func main() {
+	// start command
+	termuxcam.Run()
+}
+
+----------
+./internal/termuxcam/api.go
+package termuxcam
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+const (
+	httpAddr        = ":8080"
+	httpsAddr       = ":8443"
+	rwTimeout       = 30 * time.Second
+	idleTimeout     = 60 * time.Second
+	shutdownTimeout = 30 * time.Second
+)
+
+// forbiddenConfigKeys mirrors the blacklist used by the Telegram /config set
+// command. These settings are deliberately device-only.
+var forbiddenConfigKeys = []string{"key", "token", "password", "secret"}
+
+// StartAPIServer runs the HTTP/HTTPS API with graceful shutdown. It blocks
+// until both servers stop or a signal is received. Call it in a goroutine.
+func StartAPIServer(port int) {
+	// The `port` argument only controls the HTTP listener for backward
+	// compatibility; HTTPS always uses httpsAddr. If port == 0, both are
+	// disabled.
+	if port == 0 {
+		return
+	}
+	httpListen := fmt.Sprintf(":%d", port)
+
+	cert, err := EnsureSelfSignedCert()
+	if err != nil {
+		log.Printf("❌ failed to prepare TLS certificate: %v", err)
+		return
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/status", handleStatusAPI)
+	mux.HandleFunc("/health", handleHealthAPI)
+	mux.HandleFunc("/config", handleConfigAPI)
+	mux.HandleFunc("/capture", handleCaptureAPI)
+
+	httpsSrv := &http.Server{
+		Addr:         httpsAddr,
+		Handler:      mux,
+		ReadTimeout:  rwTimeout,
+		WriteTimeout: rwTimeout,
+		IdleTimeout:  idleTimeout,
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
+	}
+
+	// HTTP: /health responds directly (useful for probes without TLS).
+	// Everything else redirects to HTTPS.
+	httpSrv := &http.Server{
+		Addr: httpListen,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && r.URL.Path == "/health" {
+				writeJSON(w, http.StatusOK, map[string]string{
+					"status":  "ok",
+					"version": ProjectVersion,
+				})
+				return
+			}
+			target := "https://" + r.Host + httpsAddr + r.URL.RequestURI()
+			http.Redirect(w, r, target, http.StatusMovedPermanently)
+		}),
+		ReadTimeout:  rwTimeout,
+		WriteTimeout: rwTimeout,
+		IdleTimeout:  idleTimeout,
+	}
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(stop)
+
+	errCh := make(chan error, 2)
+
+	go func() {
+		log.Printf("🔒 API (HTTPS) listening on https://localhost%s", httpsAddr)
+		if err := httpsSrv.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("https server: %w", err)
+		}
+	}()
+
+	go func() {
+		log.Printf("↪️  HTTP → HTTPS redirect on http://localhost%s", httpListen)
+		log.Printf("   /health available over plain HTTP (no redirect) for probes.")
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- fmt.Errorf("http server: %w", err)
+		}
+	}()
+
+	select {
+	case <-stop:
+		log.Println("🛑 shutdown signal received, starting graceful shutdown...")
+	case err := <-errCh:
+		log.Printf("❌ server error, starting graceful shutdown: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		log.Printf("⚠️  HTTP shutdown error: %v", err)
+	}
+	if err := httpsSrv.Shutdown(ctx); err != nil {
+		log.Printf("⚠️  HTTPS shutdown error: %v", err)
+	}
+	log.Println("✅ API servers stopped cleanly")
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+func allowMethods(w http.ResponseWriter, r *http.Request, methods ...string) bool {
+	for _, m := range methods {
+		if r.Method == m {
+			return true
+		}
+	}
+	w.Header().Set("Allow", strings.Join(methods, ", "))
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	return false
+}
+
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ---------------------------------------------------------------------------
+// /status
+// ---------------------------------------------------------------------------
+
+func handleStatusAPI(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":   "ok",
+		"version":  ProjectVersion,
+		"telegram": GetStatus(),
+		"daemon":   DaemonStatusString(),
+	})
+}
+
+// ---------------------------------------------------------------------------
+// /health
+// ---------------------------------------------------------------------------
+
+func handleHealthAPI(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet) {
+		return
+	}
+	config := GetConfig()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":      "healthy",
+		"version":     ProjectVersion,
+		"camera":      "OK",
+		"interval":    config.CaptureInterval.String(),
+		"camera_mode": config.CameraMode,
+		"burst":       config.BurstCount,
+		"keep_logs":   config.KeepLogsDays,
+		"encryption":  config.EncryptionKey != "",
+	})
+}
+
+// ---------------------------------------------------------------------------
+// /config
+// ---------------------------------------------------------------------------
+
+func handleConfigAPI(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, GetConfig())
+		return
+
+	case http.MethodPost, http.MethodPut:
+		var updates map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+		if len(updates) == 0 {
+			http.Error(w, "empty update set", http.StatusBadRequest)
+			return
+		}
+
+		for k := range updates {
+			lower := strings.ToLower(k)
+			for _, banned := range forbiddenConfigKeys {
+				if strings.Contains(lower, banned) {
+					http.Error(w,
+						fmt.Sprintf("setting %q can only be changed on the device", k),
+						http.StatusForbidden)
+					return
+				}
+			}
+		}
+
+		for k, v := range updates {
+			if err := SetConfigValue(k + "=" + v); err != nil {
+				http.Error(w, fmt.Sprintf("invalid setting %q: %v", k, err), http.StatusBadRequest)
+				return
+			}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status": "updated",
+			"config": GetConfig(),
+		})
+		return
+
+	default:
+		w.Header().Set("Allow", "GET, POST, PUT")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// /capture
+// ---------------------------------------------------------------------------
+
+func handleCaptureAPI(w http.ResponseWriter, r *http.Request) {
+	if !allowMethods(w, r, http.MethodGet, http.MethodPost) {
+		return
+	}
+
+	camera := -1
+	burst := 1
+
+	if v := r.URL.Query().Get("camera"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed < -1 || parsed > 1 {
+			http.Error(w, "camera must be -1, 0 or 1", http.StatusBadRequest)
+			return
+		}
+		camera = parsed
+	}
+	if v := r.URL.Query().Get("burst"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed < 1 || parsed > 5 {
+			http.Error(w, "burst must be between 1 and 5", http.StatusBadRequest)
+			return
+		}
+		burst = parsed
+	}
+
+	cameraID := FrontCameraHWID
+	label := "Front"
+	if camera == 0 {
+		cameraID = BackCameraHWID
+		label = "Back"
+	}
+
+	captureMu.Lock()
+	files, captureErr := CaptureBurst(cameraID, burst)
+	sent, failed := 0, 0
+	for _, f := range files {
+		if err := AddExifMetadata(f); err != nil {
+			log.Printf("Failed to add metadata: %v", err)
+		}
+		caption := fmt.Sprintf("📸 %s camera (api)\n🕐 %s",
+			label, time.Now().Format("02/01/2006 15:04:05"))
+
+		if Bot != nil {
+			if err := Bot.SendPhoto(f, caption); err != nil {
+				log.Printf("Photo upload failed: %v", err)
+				IncrementFailedUploads()
+				failed++
+				if pErr := preserveFailedPhoto(f); pErr != nil {
+					log.Printf("Failed to preserve photo after upload failure: %v", pErr)
+				}
+				continue
+			}
+			IncrementTotalPhotos()
+			SetLastCapture(time.Now())
+			sent++
+		} else {
+			failed++
+			if pErr := preserveFailedPhoto(f); pErr != nil {
+				log.Printf("Failed to preserve photo without Telegram configuration: %v", pErr)
+			}
+			continue
+		}
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			log.Printf("Failed to remove processed photo: %v", err)
+		}
+	}
+	captureMu.Unlock()
+
+	resp := map[string]interface{}{
+		"camera": camera,
+		"label":  label,
+		"burst":  burst,
+		"sent":   sent,
+		"failed": failed,
+	}
+	if captureErr != nil {
+		resp["error"] = captureErr.Error()
+		writeJSON(w, http.StatusInternalServerError, resp)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+----------
+./internal/termuxcam/api_test.go
+package termuxcam
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestHandleHealthAPI(t *testing.T) {
+	setAPIConfigForTest(t, Config{
+		CaptureInterval: 10 * time.Minute,
+		CameraMode:      2,
+		BurstCount:      3,
+		KeepLogsDays:    8,
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/health", nil)
+	handleHealthAPI(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var response map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response["status"] != "healthy" || response["version"] != ProjectVersion {
+		t.Errorf("status/version = %v/%v, want healthy/%s", response["status"], response["version"], ProjectVersion)
+	}
+	if response["interval"] != "10m0s" || response["camera_mode"] != float64(2) || response["burst"] != float64(3) || response["keep_logs"] != float64(8) {
+		t.Errorf("health config fields = %v, want interval 10m0s, camera 2, burst 3, keep_logs 8", response)
+	}
+}
+
+func TestHandleStatusAPIResponseAndMethod(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/status", nil)
+	handleStatusAPI(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var response map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response["status"] != "ok" || response["version"] != ProjectVersion {
+		t.Errorf("status/version = %v/%v, want ok/%s", response["status"], response["version"], ProjectVersion)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/status", nil)
+	handleStatusAPI(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST status = %d, want %d", recorder.Code, http.StatusMethodNotAllowed)
+	}
+	if got := recorder.Header().Get("Allow"); got != http.MethodGet {
+		t.Errorf("Allow = %q, want %q", got, http.MethodGet)
+	}
+}
+
+func TestHandleConfigAPIGetHidesSecrets(t *testing.T) {
+	setAPIConfigForTest(t, Config{
+		CaptureInterval:  5 * time.Minute,
+		CameraMode:       1,
+		BurstCount:       1,
+		KeepLogsDays:     3,
+		TelegramBotToken: "bot-secret",
+		TelegramChatID:   "chat-secret",
+		EncryptionKey:    "encryption-secret",
+	})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/config", nil)
+	handleConfigAPI(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET config = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	for _, secret := range []string{"bot-secret", "chat-secret", "encryption-secret"} {
+		if strings.Contains(recorder.Body.String(), secret) {
+			t.Errorf("GET config response exposes %q", secret)
+		}
+	}
+}
+
+func TestHandleConfigAPIUpdatePersistsConfig(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "termuxcam.toml")
+	withAPIConfigFile(t, configFile)
+	setAPIConfigForTest(t, Config{CaptureInterval: 5 * time.Minute, CameraMode: 1, BurstCount: 1, KeepLogsDays: 3})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(`{"burst":"4"}`))
+	handleConfigAPI(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST config = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if got := GetConfig().BurstCount; got != 4 {
+		t.Errorf("burst count = %d, want 4", got)
+	}
+	if err := LoadConfig(configFile); err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := GetConfig().BurstCount; got != 4 {
+		t.Errorf("persisted burst count = %d, want 4", got)
+	}
+}
+
+func TestHandleConfigAPIRejectsInvalidAndSensitiveUpdates(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "termuxcam.toml")
+	withAPIConfigFile(t, configFile)
+	want := Config{CaptureInterval: 5 * time.Minute, CameraMode: 1, BurstCount: 2, KeepLogsDays: 7}
+	setAPIConfigForTest(t, want)
+
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{name: "malformed JSON", body: `{"burst":`, wantStatus: http.StatusBadRequest},
+		{name: "empty update", body: `{}`, wantStatus: http.StatusBadRequest},
+		{name: "invalid value", body: `{"burst":"6"}`, wantStatus: http.StatusBadRequest},
+		{name: "sensitive key", body: `{"tg_bot_token":"new-secret"}`, wantStatus: http.StatusForbidden},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(tt.body))
+			handleConfigAPI(recorder, request)
+
+			if recorder.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d: %s", recorder.Code, tt.wantStatus, recorder.Body.String())
+			}
+			if got := GetConfig(); got != want {
+				t.Errorf("config after rejected update = %+v, want unchanged %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestHandleCaptureAPIRejectsInvalidQueries(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "invalid camera", query: "camera=2"},
+		{name: "malformed camera", query: "camera=invalid"},
+		{name: "invalid burst", query: "burst=6"},
+		{name: "malformed burst", query: "burst=invalid"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/capture?"+tt.query, nil)
+			handleCaptureAPI(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d: %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func withAPIConfigFile(t *testing.T, configFile string) {
+	t.Helper()
+	previousConfigFile := CLI.ConfigFile
+	CLI.ConfigFile = configFile
+	t.Cleanup(func() { CLI.ConfigFile = previousConfigFile })
+}
+
+func setAPIConfigForTest(t *testing.T, config Config) {
+	t.Helper()
+	ConfigMu.Lock()
+	previousConfig := AppConfig
+	AppConfig = config
+	ConfigMu.Unlock()
+	t.Cleanup(func() {
+		ConfigMu.Lock()
+		AppConfig = previousConfig
+		ConfigMu.Unlock()
+	})
+}
+
+----------
+./internal/termuxcam/capture.go
+package termuxcam
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
+)
+
+const (
+	FrontCameraHWID = "1"
+	BackCameraHWID  = "0"
+	CaptureTimeout  = 45 * time.Second
+)
+
+func CaptureBurst(cameraID string, count int) ([]string, error) {
+	if count < 1 || count > 5 {
+		return nil, fmt.Errorf("burst count must be between 1 and 5")
+	}
+
+	var files []string
+	tempDir := filepath.Join(GetBinaryDir(), "camera_captures", "temp")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return nil, fmt.Errorf("create capture directory: %w", err)
+	}
+
+	for i := 0; i < count; i++ {
+		filename := fmt.Sprintf("%s_%d_%d.jpg",
+			time.Now().Format("20060102_150405"),
+			i+1,
+			time.Now().UnixNano())
+		filePath := filepath.Join(tempDir, filename)
+
+		ctx, cancel := context.WithTimeout(context.Background(), CaptureTimeout)
+		cmd := exec.CommandContext(ctx, "termux-camera-photo", "-c", cameraID, filePath)
+		err := cmd.Run()
+		cancel()
+		if err != nil {
+			if removeErr := os.Remove(filePath); removeErr != nil && !os.IsNotExist(removeErr) {
+				log.Printf("Failed to remove partial capture: %v", removeErr)
+			}
+			return files, fmt.Errorf("capture %d failed: %w", i+1, err)
+		}
+
+		info, err := os.Stat(filePath)
+		if err != nil || info.Size() == 0 {
+			if removeErr := os.Remove(filePath); removeErr != nil && !os.IsNotExist(removeErr) {
+				log.Printf("Failed to remove invalid capture: %v", removeErr)
+			}
+			if err != nil {
+				return files, fmt.Errorf("inspect capture %d: %w", i+1, err)
+			}
+			return files, fmt.Errorf("capture %d produced an empty file", i+1)
+		}
+		files = append(files, filePath)
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	return files, nil
+}
+
+func DoCapture() {
+	captureMu.Lock()
+	defer captureMu.Unlock()
+	log.Println("Starting capture cycle...")
+
+	config := GetConfig()
+
+	cameras := []string{}
+	switch config.CameraMode {
+	case 0:
+		cameras = []string{BackCameraHWID}
+	case 1:
+		cameras = []string{FrontCameraHWID}
+	case 2:
+		cameras = []string{FrontCameraHWID, BackCameraHWID}
+	}
+
+	preserveTempFiles := false
+	for _, cameraID := range cameras {
+		files, err := CaptureBurst(cameraID, config.BurstCount)
+		if err != nil {
+			log.Printf("Capture failed: %v", err)
+			IncrementErrorCount()
+			continue
+		}
+
+		for _, filePath := range files {
+			if err := AddExifMetadata(filePath); err != nil {
+				log.Printf("Failed to add metadata: %v", err)
+			}
+
+			if config.EncryptionKey != "" {
+				encrypted, err := EncryptFile(filePath, config.EncryptionKey)
+				if err != nil {
+					log.Printf("Encryption failed: %v", err)
+					IncrementErrorCount()
+					if preserveErr := preserveFailedPhoto(filePath); preserveErr != nil {
+						log.Printf("Failed to preserve photo after encryption failure: %v", preserveErr)
+						preserveTempFiles = true
+					}
+					continue
+				}
+
+				encPath := filepath.Join(GetBinaryDir(), "camera_captures", "encrypted",
+					filepath.Base(filePath)+".enc")
+				if err := os.WriteFile(encPath, []byte(encrypted), 0644); err != nil {
+					log.Printf("Failed to save encrypted file: %v", err)
+					IncrementErrorCount()
+					if preserveErr := preserveFailedPhoto(filePath); preserveErr != nil {
+						log.Printf("Failed to preserve photo after encryption write failure: %v", preserveErr)
+						preserveTempFiles = true
+					}
+					continue
+				}
+			}
+
+			if Bot != nil {
+				caption := fmt.Sprintf("📸 %s camera\n🕐 %s",
+					map[string]string{FrontCameraHWID: "Front", BackCameraHWID: "Back"}[cameraID],
+					time.Now().Format("02/01/2006 15:04:05"))
+
+				if err := Bot.SendPhoto(filePath, caption); err != nil {
+					log.Printf("Photo upload failed: %v", err)
+					IncrementFailedUploads()
+					if err := preserveFailedPhoto(filePath); err != nil {
+						log.Printf("Failed to preserve photo after upload failure: %v", err)
+						preserveTempFiles = true
+					}
+				} else {
+					IncrementTotalPhotos()
+					SetLastCapture(time.Now())
+					log.Printf("Photo sent: %s", filepath.Base(filePath))
+				}
+			} else {
+				log.Printf("Telegram bot is not configured; preserving photo %s", filepath.Base(filePath))
+				IncrementFailedUploads()
+				if err := preserveFailedPhoto(filePath); err != nil {
+					log.Printf("Failed to preserve photo without Telegram configuration: %v", err)
+					preserveTempFiles = true
+				}
+			}
+
+			if !preserveTempFiles {
+				if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
+					log.Printf("Failed to remove processed photo: %v", err)
+				}
+			}
+		}
+	}
+
+	if !preserveTempFiles {
+		tempDir := filepath.Join(GetBinaryDir(), "camera_captures", "temp")
+		if err := os.RemoveAll(tempDir); err != nil {
+			log.Printf("Failed to clear temporary captures: %v", err)
+		} else if err := os.MkdirAll(tempDir, 0755); err != nil {
+			log.Printf("Failed to recreate temporary capture directory: %v", err)
+		}
+	}
+
+	RotateLogs()
+}
+
+func preserveFailedPhoto(filePath string) error {
+	failedDir := filepath.Join(GetBinaryDir(), "camera_captures", "failed")
+	if err := os.MkdirAll(failedDir, 0755); err != nil {
+		return err
+	}
+	return os.Rename(filePath, filepath.Join(failedDir, filepath.Base(filePath)))
+}
+
+func RunDaemon() {
+	config := GetConfig()
+	log.Printf("Starting capture loop (interval: %v)", config.CaptureInterval)
+
+	ticker := time.NewTicker(config.CaptureInterval)
+	defer ticker.Stop()
+
+	DoCapture()
+
+	for range ticker.C {
+		DoCapture()
+	}
+}
+
+func RunOnce() {
+	log.Println("Running one-shot capture...")
+	DoCapture()
+	log.Println("Capture complete")
+}
+
+----------
+./internal/termuxcam/cert.go
+package termuxcam
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"net"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+const (
+	certValidity = 365 * 24 * time.Hour
+	certFile     = "termuxcam.crt"
+	keyFile      = "termuxcam.key"
+)
+
+// EnsureSelfSignedCert returns a TLS certificate, generating a self-signed
+// one on disk if no valid certificate/key pair is found.
+func EnsureSelfSignedCert() (tls.Certificate, error) {
+	certPath := filepath.Join(GetBinaryDir(), "camera_captures", certFile)
+	keyPath := filepath.Join(GetBinaryDir(), "camera_captures", keyFile)
+
+	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+		return cert, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(certPath), 0755); err != nil {
+		return tls.Certificate{}, fmt.Errorf("create cert directory: %w", err)
+	}
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("generate private key: %w", err)
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("generate serial: %w", err)
+	}
+
+	hostname, _ := os.Hostname()
+	template := x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName:   "termuxcam",
+			Organization: []string{"termuxcam"},
+		},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(certValidity),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost", hostname, "termuxcam.local"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("create certificate: %w", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("marshal private key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
+		return tls.Certificate{}, fmt.Errorf("write cert: %w", err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return tls.Certificate{}, fmt.Errorf("write key: %w", err)
+	}
+
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+----------
+./internal/termuxcam/cli.go
+package termuxcam
+
+import (
+	"fmt"
+	"log"
+	"os/exec"
+	"strings"
+
+	"github.com/alecthomas/kong"
+)
+
+var CLI struct {
+	Start   StartCmd   `cmd:"" help:"Start the capture service"`
+	Stop    StopCmd    `cmd:"" help:"Stop the capture service"`
+	Log     LogCmd     `cmd:"" help:"Follow the capture log"`
+	Restart RestartCmd `cmd:"" help:"Restart the capture service"`
+	Status  StatusCmd  `cmd:"" help:"Show service status"`
+	Run     RunCmd     `cmd:"" hidden:""`
+	Config  ConfigCmd  `cmd:"" help:"Manage configuration"`
+	Capture CaptureCmd `cmd:"" help:"Capture photos manually"`
+	Torch   TorchCmd   `cmd:"" help:"Turn the flashlight on or off"`
+	System  SystemCmd  `cmd:"" help:"Show system information"`
+	Version VersionCmd `cmd:"" help:"Show version"`
+
+	Debug      bool   `help:"Enable debug mode"`
+	LogFile    string `help:"Log file path" default:"camera_captures/capture.log"`
+	ConfigFile string `help:"Configuration file path" default:"termuxcam.toml"`
+}
+
+// ---------------------------------------------------------------------------
+// start
+// ---------------------------------------------------------------------------
+
+type StartCmd struct {
+	Port int `help:"HTTP API port" default:"8080"`
+}
+
+func (s *StartCmd) Run(ctx *kong.Context) error {
+	return Daemonize(CLI.LogFile, CLI.ConfigFile, s.Port)
+}
+
+// ---------------------------------------------------------------------------
+// stop / restart / status
+// ---------------------------------------------------------------------------
+
+type StopCmd struct{}
+
+func (s *StopCmd) Run(ctx *kong.Context) error {
+	return StopDaemon()
+}
+
+type LogCmd struct{}
+
+func (l *LogCmd) Run(ctx *kong.Context) error {
+	cmd := exec.Command("tail", "-f", resolveBinaryPath(CLI.LogFile))
+	cmd.Stdout = ctx.Stdout
+	cmd.Stderr = ctx.Stderr
+	return cmd.Run()
+}
+
+type RestartCmd struct {
+	Port int `help:"HTTP API port" default:"8080"`
+}
+
+func (s *RestartCmd) Run(ctx *kong.Context) error {
+	if err := StopDaemon(); err != nil {
+		return fmt.Errorf("stop daemon before restart: %w", err)
+	}
+	return Daemonize(CLI.LogFile, CLI.ConfigFile, s.Port)
+}
+
+type StatusCmd struct{}
+
+func (s *StatusCmd) Run(ctx *kong.Context) error {
+	fmt.Println(DaemonStatusString())
+	return nil
+}
+
+type RunCmd struct {
+	Port int `help:"HTTP API port" default:"8080"`
+}
+
+func (r *RunCmd) Run(ctx *kong.Context) error {
+	log.Println("Starting termuxcam in foreground...")
+	if err := LoadConfig(CLI.ConfigFile); err != nil {
+		return fmt.Errorf("load configuration: %w", err)
+	}
+	config := GetConfig()
+	log.Printf("Config loaded -> interval=%s | cameraMode=%d | burst=%d | config=%s",
+		config.CaptureInterval, config.CameraMode, config.BurstCount, resolveBinaryPath(CLI.ConfigFile))
+
+	InitBot()
+	StartTelegramPoller()
+	if r.Port > 0 {
+		go StartAPIServer(r.Port)
+	}
+	RunDaemon()
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// config
+// ---------------------------------------------------------------------------
+
+type ConfigCmd struct {
+	Get    bool   `help:"Show the current configuration"`
+	Set    string `help:"Set a configuration value (key=value)"`
+	Reload bool   `help:"Reload configuration from file"`
+}
+
+func (c *ConfigCmd) Run(ctx *kong.Context) error {
+	if c.Reload {
+		return LoadConfig(CLI.ConfigFile)
+	}
+	if c.Set != "" {
+		return SetConfigValue(c.Set)
+	}
+	fmt.Println(GetConfig())
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// capture
+// ---------------------------------------------------------------------------
+
+type CaptureCmd struct {
+	Camera int `help:"Camera ID (0=back, 1=front)" default:"-1"`
+	Burst  int `help:"Number of photos" default:"1"`
+}
+
+func (c *CaptureCmd) Run(ctx *kong.Context) error {
+	if c.Camera < -1 || c.Camera > 1 {
+		return fmt.Errorf("camera must be -1 (front/default), 0 (back), or 1 (front)")
+	}
+	if c.Burst < 1 || c.Burst > 5 {
+		return fmt.Errorf("burst count must be between 1 and 5")
+	}
+
+	cameraID := FrontCameraHWID
+	if c.Camera == 0 {
+		cameraID = BackCameraHWID
+	}
+
+	files, err := CaptureBurst(cameraID, c.Burst)
+	if err != nil {
+		return fmt.Errorf("capture failed: %w", err)
+	}
+
+	fmt.Printf("✅ Captured %d photo(s)\n", len(files))
+	for _, f := range files {
+		fmt.Printf("  📸 %s\n", f)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// torch
+// ---------------------------------------------------------------------------
+
+type TorchCmd struct {
+	State string `arg:"" enum:"on,off" help:"Flashlight action (on or off)"`
+}
+
+func (t *TorchCmd) Run(ctx *kong.Context) error {
+	output, err := exec.Command("termux-torch", t.State).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to turn flashlight %s: %w (%s)", t.State, err, strings.TrimSpace(string(output)))
+	}
+	if t.State == "on" {
+		fmt.Println("Flashlight turned on")
+	} else {
+		fmt.Println("Flashlight turned off")
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// system / version
+// ---------------------------------------------------------------------------
+
+type SystemCmd struct{}
+
+func (s *SystemCmd) Run(ctx *kong.Context) error {
+	PrintSystemInfo()
+	return nil
+}
+
+type VersionCmd struct{}
+
+func (v *VersionCmd) Run(ctx *kong.Context) error {
+	fmt.Printf("termuxcam v%s\n", ProjectVersion)
+	fmt.Println("Go project for camera capture in Termux")
+	return nil
+}
+
+----------
+./internal/termuxcam/config.go
+package termuxcam
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/pelletier/go-toml/v2"
+)
+
+var (
+	AppConfig Config
+	ConfigMu  sync.RWMutex
+)
+
+const defaultRasplabEndpoint = "https://192.168.1.15:8443/rasplab"
+
+type Config struct {
+	CaptureInterval  time.Duration `toml:"capture"`
+	CameraMode       int           `toml:"camera"`
+	BurstCount       int           `toml:"burst"`
+	KeepLogsDays     int           `toml:"logs_days"`
+	RasplabEndpoint  string        `toml:"rasplab_endpoint"`
+	TelegramBotToken string        `toml:"tg_bot_token" json:"-"`
+	TelegramChatID   string        `toml:"tg_chat_id" json:"-"`
+	EncryptionKey    string        `toml:"encryption_key" json:"-"`
+	Debug            bool          `toml:"debug"`
+}
+
+func (c Config) String() string {
+	return fmt.Sprintf(
+		"{CaptureInterval:%s CameraMode:%d BurstCount:%d KeepLogsDays:%d RasplabEndpoint:%s TelegramConfigured:%t EncryptionEnabled:%t Debug:%t}",
+		c.CaptureInterval,
+		c.CameraMode,
+		c.BurstCount,
+		c.KeepLogsDays,
+		c.RasplabEndpoint,
+		c.TelegramBotToken != "" && c.TelegramChatID != "",
+		c.EncryptionKey != "",
+		c.Debug,
+	)
+}
+
+func LoadConfig(configFile string) error {
+	ConfigMu.Lock()
+	defer ConfigMu.Unlock()
+
+	configFile = resolveBinaryPath(configFile)
+	AppConfig = Config{
+		CaptureInterval: 5 * time.Minute,
+		CameraMode:      1,
+		BurstCount:      1,
+		KeepLogsDays:    3,
+		RasplabEndpoint: defaultRasplabEndpoint,
+	}
+
+	data, err := os.ReadFile(configFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	parsed := struct {
+		Capture          string `toml:"capture"`
+		Camera           int    `toml:"camera"`
+		Burst            int    `toml:"burst"`
+		LogsDays         int    `toml:"logs_days"`
+		RasplabEndpoint  string `toml:"rasplab_endpoint"`
+		TelegramBotToken string `toml:"tg_bot_token"`
+		TelegramChatID   string `toml:"tg_chat_id"`
+		EncryptionKey    string `toml:"encryption_key"`
+		Debug            bool   `toml:"debug"`
+	}{
+		Capture:         "5m",
+		Camera:          1,
+		Burst:           1,
+		LogsDays:        3,
+		RasplabEndpoint: defaultRasplabEndpoint,
+	}
+
+	if err := toml.Unmarshal(data, &parsed); err != nil {
+		return fmt.Errorf("parse TOML configuration %q: %w", configFile, err)
+	}
+	if dur, err := time.ParseDuration(parsed.Capture); err == nil && dur >= time.Minute && dur <= 24*time.Hour {
+		AppConfig.CaptureInterval = dur
+	}
+	if parsed.Camera >= 0 && parsed.Camera <= 2 {
+		AppConfig.CameraMode = parsed.Camera
+	}
+	if parsed.Burst >= 1 && parsed.Burst <= 5 {
+		AppConfig.BurstCount = parsed.Burst
+	}
+	if parsed.LogsDays >= 1 && parsed.LogsDays <= 30 {
+		AppConfig.KeepLogsDays = parsed.LogsDays
+	}
+	AppConfig.TelegramBotToken = parsed.TelegramBotToken
+	AppConfig.TelegramChatID = parsed.TelegramChatID
+	AppConfig.RasplabEndpoint = parsed.RasplabEndpoint
+	AppConfig.EncryptionKey = parsed.EncryptionKey
+	AppConfig.Debug = parsed.Debug
+	return nil
+}
+
+func GetConfig() Config {
+	ConfigMu.RLock()
+	defer ConfigMu.RUnlock()
+	return AppConfig
+}
+
+func SetConfigValue(setting string) error {
+	parts := strings.SplitN(setting, "=", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid format; use key=value")
+	}
+
+	key := strings.TrimSpace(parts[0])
+	value := strings.TrimSpace(parts[1])
+
+	ConfigMu.Lock()
+	defer ConfigMu.Unlock()
+
+	switch key {
+	case "camera":
+		mode, err := strconv.Atoi(value)
+		if err != nil || mode < 0 || mode > 2 {
+			return fmt.Errorf("camera must be 0, 1, or 2")
+		}
+		AppConfig.CameraMode = mode
+	case "capture", "interval":
+		dur, err := time.ParseDuration(value)
+		if err != nil || dur < time.Minute || dur > 24*time.Hour {
+			return fmt.Errorf("invalid interval (1m-24h)")
+		}
+		AppConfig.CaptureInterval = dur
+	case "burst":
+		count, err := strconv.Atoi(value)
+		if err != nil || count < 1 || count > 5 {
+			return fmt.Errorf("burst must be between 1 and 5")
+		}
+		AppConfig.BurstCount = count
+	case "logs_days":
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 1 || days > 30 {
+			return fmt.Errorf("logs_days must be between 1 and 30")
+		}
+		AppConfig.KeepLogsDays = days
+	default:
+		return fmt.Errorf("unknown setting: %s", key)
+	}
+
+	return saveConfig(AppConfig)
+}
+
+func SaveConfig() error {
+	return saveConfig(GetConfig())
+}
+
+func saveConfig(config Config) error {
+	serialized := struct {
+		Capture          string `toml:"capture"`
+		Camera           int    `toml:"camera"`
+		Burst            int    `toml:"burst"`
+		LogsDays         int    `toml:"logs_days"`
+		RasplabEndpoint  string `toml:"rasplab_endpoint"`
+		TelegramBotToken string `toml:"tg_bot_token"`
+		TelegramChatID   string `toml:"tg_chat_id"`
+		EncryptionKey    string `toml:"encryption_key"`
+		Debug            bool   `toml:"debug"`
+	}{
+		Capture:          config.CaptureInterval.String(),
+		Camera:           config.CameraMode,
+		Burst:            config.BurstCount,
+		LogsDays:         config.KeepLogsDays,
+		RasplabEndpoint:  config.RasplabEndpoint,
+		TelegramBotToken: config.TelegramBotToken,
+		TelegramChatID:   config.TelegramChatID,
+		EncryptionKey:    config.EncryptionKey,
+		Debug:            config.Debug,
+	}
+	content, err := toml.Marshal(serialized)
+	if err != nil {
+		return fmt.Errorf("encode TOML configuration: %w", err)
+	}
+
+	configPath := resolveBinaryPath(CLI.ConfigFile)
+	if err := os.WriteFile(configPath, content, 0600); err != nil {
+		return fmt.Errorf("write TOML configuration %q: %w", configPath, err)
+	}
+	return os.Chmod(configPath, 0600)
+}
+
+----------
+./internal/termuxcam/config_set_test.go
+package termuxcam
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestSetConfigValueAcceptsBoundaryValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		setting string
+		want    Config
+	}{
+		{
+			name:    "minimum camera mode",
+			setting: "camera=0",
+			want:    Config{CaptureInterval: 5 * time.Minute, CameraMode: 0, BurstCount: 1, KeepLogsDays: 3},
+		},
+		{
+			name:    "maximum camera mode",
+			setting: "camera=2",
+			want:    Config{CaptureInterval: 5 * time.Minute, CameraMode: 2, BurstCount: 1, KeepLogsDays: 3},
+		},
+		{
+			name:    "minimum capture interval",
+			setting: "capture=1m",
+			want:    Config{CaptureInterval: time.Minute, CameraMode: 1, BurstCount: 1, KeepLogsDays: 3},
+		},
+		{
+			name:    "maximum capture interval alias",
+			setting: "interval=24h",
+			want:    Config{CaptureInterval: 24 * time.Hour, CameraMode: 1, BurstCount: 1, KeepLogsDays: 3},
+		},
+		{
+			name:    "minimum burst count",
+			setting: "burst=1",
+			want:    Config{CaptureInterval: 5 * time.Minute, CameraMode: 1, BurstCount: 1, KeepLogsDays: 3},
+		},
+		{
+			name:    "maximum burst count",
+			setting: "burst=5",
+			want:    Config{CaptureInterval: 5 * time.Minute, CameraMode: 1, BurstCount: 5, KeepLogsDays: 3},
+		},
+		{
+			name:    "minimum log retention",
+			setting: "logs_days=1",
+			want:    Config{CaptureInterval: 5 * time.Minute, CameraMode: 1, BurstCount: 1, KeepLogsDays: 1},
+		},
+		{
+			name:    "maximum log retention",
+			setting: "logs_days=30",
+			want:    Config{CaptureInterval: 5 * time.Minute, CameraMode: 1, BurstCount: 1, KeepLogsDays: 30},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configFile := filepath.Join(t.TempDir(), "termuxcam.toml")
+			withConfigFile(t, configFile)
+			setTestConfig(t, Config{CaptureInterval: 5 * time.Minute, CameraMode: 1, BurstCount: 1, KeepLogsDays: 3})
+
+			if err := SetConfigValue(tt.setting); err != nil {
+				t.Fatalf("SetConfigValue(%q) error = %v", tt.setting, err)
+			}
+			if got := GetConfig(); got != tt.want {
+				t.Errorf("config after SetConfigValue() = %+v, want %+v", got, tt.want)
+			}
+			if err := LoadConfig(configFile); err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			if got := GetConfig(); got != tt.want {
+				t.Errorf("reloaded config = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSetConfigValueRejectsInvalidValuesWithoutChangingConfig(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "termuxcam.toml")
+	withConfigFile(t, configFile)
+	want := Config{CaptureInterval: 5 * time.Minute, CameraMode: 1, BurstCount: 2, KeepLogsDays: 7}
+	setTestConfig(t, want)
+
+	settings := []string{
+		"",
+		"camera=-1",
+		"camera=3",
+		"camera=invalid",
+		"capture=59s",
+		"capture=24h1m",
+		"capture=invalid",
+		"interval=0m",
+		"burst=0",
+		"burst=6",
+		"burst=invalid",
+		"logs_days=0",
+		"logs_days=31",
+		"logs_days=invalid",
+		"unknown=value",
+	}
+
+	for _, setting := range settings {
+		t.Run(setting, func(t *testing.T) {
+			if err := SetConfigValue(setting); err == nil {
+				t.Fatalf("SetConfigValue(%q) error = nil, want validation error", setting)
+			}
+			if got := GetConfig(); got != want {
+				t.Errorf("config after rejected setting = %+v, want unchanged %+v", got, want)
+			}
+		})
+	}
+}
+
+func withConfigFile(t *testing.T, configFile string) {
+	t.Helper()
+	previousConfigFile := CLI.ConfigFile
+	CLI.ConfigFile = configFile
+	t.Cleanup(func() { CLI.ConfigFile = previousConfigFile })
+}
+
+func setTestConfig(t *testing.T, config Config) {
+	t.Helper()
+	ConfigMu.Lock()
+	previousConfig := AppConfig
+	AppConfig = config
+	ConfigMu.Unlock()
+	t.Cleanup(func() {
+		ConfigMu.Lock()
+		AppConfig = previousConfig
+		ConfigMu.Unlock()
+	})
+}
+----------
+./internal/termuxcam/config_test.go
+package termuxcam
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestLoadConfigReadsTOMLAndUsesDefaultsForInvalidValues(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "termuxcam.toml")
+	contents := `capture = "30s"
+camera = 2
+burst = 4
+logs_days = 7
+tg_bot_token = "bot-token"
+tg_chat_id = "12345"
+rasplab_endpoint = "https://raspi.local:8443/rasplab"
+encryption_key = "0123456789abcdef"
+debug = true
+`
+	if err := os.WriteFile(configFile, []byte(contents), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := LoadConfig(configFile); err != nil {
+		t.Fatal(err)
+	}
+
+	config := GetConfig()
+	if config.CaptureInterval != 5*time.Minute {
+		t.Errorf("capture interval = %s, want default 5m", config.CaptureInterval)
+	}
+	if config.CameraMode != 2 || config.BurstCount != 4 || config.KeepLogsDays != 7 {
+		t.Errorf("unexpected camera/burst/log settings: %+v", config)
+	}
+	if config.TelegramBotToken != "bot-token" || config.TelegramChatID != "12345" {
+		t.Errorf("Telegram credentials were not loaded: %+v", config)
+	}
+	if config.RasplabEndpoint != "https://raspi.local:8443/rasplab" {
+		t.Errorf("Rasplab endpoint = %q, want configured endpoint", config.RasplabEndpoint)
+	}
+	if config.EncryptionKey != "0123456789abcdef" || !config.Debug {
+		t.Errorf("encryption/debug settings were not loaded: %+v", config)
+	}
+	if strings.Contains(config.String(), "bot-token") || strings.Contains(config.String(), config.EncryptionKey) {
+		t.Error("config string exposes secret values")
+	}
+}
+
+func TestLoadConfigReportsMalformedTOML(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "termuxcam.toml")
+	if err := os.WriteFile(configFile, []byte("camera = ["), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := LoadConfig(configFile); err == nil {
+		t.Fatal("LoadConfig() error = nil, want malformed TOML error")
+	}
+}
+
+func TestSaveConfigRoundTripsTOML(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "termuxcam.toml")
+	previousConfigFile := CLI.ConfigFile
+	CLI.ConfigFile = configFile
+	t.Cleanup(func() { CLI.ConfigFile = previousConfigFile })
+
+	want := Config{
+		CaptureInterval:  10 * time.Minute,
+		CameraMode:       2,
+		BurstCount:       3,
+		KeepLogsDays:     9,
+		TelegramBotToken: "bot-token",
+		TelegramChatID:   "12345",
+		RasplabEndpoint:  "https://raspi.local:8443/rasplab",
+		EncryptionKey:    "0123456789abcdef",
+		Debug:            true,
+	}
+	ConfigMu.Lock()
+	AppConfig = want
+	ConfigMu.Unlock()
+
+	if err := SaveConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadConfig(configFile); err != nil {
+		t.Fatal(err)
+	}
+
+	got := GetConfig()
+	if got != want {
+		t.Errorf("round trip config = %+v, want %+v", got, want)
+	}
+	info, err := os.Stat(configFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMode := info.Mode().Perm(); gotMode != 0600 {
+		t.Errorf("config file mode = %04o, want 0600", gotMode)
+	}
+}
+
+func TestLoadConfigUsesDefaultRasplabEndpoint(t *testing.T) {
+	configFile := filepath.Join(t.TempDir(), "termuxcam.toml")
+	if err := os.WriteFile(configFile, []byte("camera = 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := LoadConfig(configFile); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetConfig().RasplabEndpoint; got != defaultRasplabEndpoint {
+		t.Errorf("Rasplab endpoint = %q, want default %q", got, defaultRasplabEndpoint)
+	}
+}
+
+func TestResolveBinaryPathPrefersCurrentWorkingDirectoryWhenPresent(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	configFile := filepath.Join(cwd, "termuxcam-override.toml")
+	if err := os.WriteFile(configFile, []byte("capture = \"10m\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(configFile) })
+
+	if err := LoadConfig(filepath.Base(configFile)); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetConfig().CaptureInterval; got != 10*time.Minute {
+		t.Errorf("loaded capture interval = %s, want 10m", got)
+	}
+}
+
+func TestResolveBinaryPathUsesExecutableDirectoryFallback(t *testing.T) {
+	file, err := os.CreateTemp(GetBinaryDir(), "termuxcam-*.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configFile := file.Name()
+	t.Cleanup(func() { os.Remove(configFile) })
+	if _, err := file.WriteString(`capture = "10m"`); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := LoadConfig(filepath.Base(configFile)); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetConfig().CaptureInterval; got != 10*time.Minute {
+		t.Errorf("loaded capture interval = %s, want 10m", got)
+	}
+}
+
+----------
+./internal/termuxcam/crypto.go
+package termuxcam
+
+import (
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"io"
+	"os"
+)
+
+func EncryptFile(filePath, key string) (string, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", err
+	}
+
+	block, err := aes.NewCipher([]byte(key))
+	if err != nil {
+		return "", fmt.Errorf("erro ao criar cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("erro ao criar GCM: %w", err)
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+
+	ciphertext := gcm.Seal(nonce, nonce, data, nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+----------
+./internal/termuxcam/daemon.go
+package termuxcam
+
+import (
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+const daemonEnvMarker = "_TERMUXCAM_DAEMON"
+
+// pidFilePath returns the location of the PID file next to the log file.
+func pidFilePath() string {
+	return filepath.Join(GetBinaryDir(), "camera_captures", "termuxcam.pid")
+}
+
+func readPid() (int, error) {
+	data, err := os.ReadFile(pidFilePath())
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0, err
+	}
+	return pid, nil
+}
+
+func processAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+// Daemonize re-executes the current binary in detached mode, redirects the
+// output to the log file, writes the PID file, then returns to the caller
+// (which should exit). The child runs the same `start` command, but detects
+// the environment marker and runs the service loop instead of re-daemonizing.
+func Daemonize(logFile, configFile string, port int) error {
+	// Refuse to start twice.
+	if pid, err := readPid(); err == nil && processAlive(pid) {
+		return fmt.Errorf("already running (pid %d)", pid)
+	}
+	os.Remove(pidFilePath())
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable: %w", err)
+	}
+
+	logPath := resolveBinaryPath(logFile)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		return fmt.Errorf("create log directory: %w", err)
+	}
+	logFd, err := os.OpenFile(logPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		return fmt.Errorf("open log file: %w", err)
+	}
+
+	args := []string{
+		"start",
+		"--port", strconv.Itoa(port),
+		"--log-file", logFile,
+		"--config-file", configFile,
+	}
+
+	cmd := exec.Command(exe, args...)
+	cmd.Env = append(os.Environ(), daemonEnvMarker+"=1")
+	cmd.Stdin = nil
+	cmd.Stdout = logFd
+	cmd.Stderr = logFd
+	configureDaemonProcess(cmd)
+
+	if err := cmd.Start(); err != nil {
+		logFd.Close()
+		return fmt.Errorf("start daemon: %w", err)
+	}
+
+	// Write the PID of the detached child.
+	pidDir := filepath.Dir(pidFilePath())
+	if err := os.MkdirAll(pidDir, 0755); err != nil {
+		logFd.Close()
+		return fmt.Errorf("create pid directory: %w", err)
+	}
+	if err := os.WriteFile(pidFilePath(), []byte(strconv.Itoa(cmd.Process.Pid)), 0644); err != nil {
+		logFd.Close()
+		return fmt.Errorf("write pid file: %w", err)
+	}
+
+	logFd.Close()
+
+	// Give the child a moment to fail fast if something is broken.
+	time.Sleep(500 * time.Millisecond)
+	if !processAlive(cmd.Process.Pid) {
+		os.Remove(pidFilePath())
+		return errors.New("daemon exited right after start, check the log file")
+	}
+
+	fmt.Printf("daemon started (pid %d)\n", cmd.Process.Pid)
+	fmt.Printf("log: %s\n", logPath)
+	return nil
+}
+
+// RunDaemonChild is called from main() when the daemon environment marker is set.
+// It skips daemonization and runs the service loop in the current process.
+func RunDaemonChild(port int, configFile string) {
+	log.Println("termuxcam daemon starting")
+
+	CLI.ConfigFile = configFile
+	if err := LoadConfig(configFile); err != nil {
+		log.Printf("Failed to load configuration: %v", err)
+		return
+	}
+
+	InitBot()
+	StartTelegramPoller()
+
+	if port > 0 {
+		go StartAPIServer(port)
+	}
+
+	RunDaemon() // blocks forever
+}
+
+// StopDaemon sends SIGTERM to the PID from the pid file, waits up to 5s,
+// then SIGKILLs if still alive. Removes the pid file.
+func StopDaemon() error {
+	pid, err := readPid()
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("not running")
+			return nil
+		}
+		return err
+	}
+
+	if !processAlive(pid) {
+		os.Remove(pidFilePath())
+		fmt.Println("not running")
+		return nil
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		return fmt.Errorf("signal process: %w", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		if !processAlive(pid) {
+			os.Remove(pidFilePath())
+			fmt.Printf("stopped (pid %d)\n", pid)
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	_ = proc.Signal(syscall.SIGKILL)
+	os.Remove(pidFilePath())
+	fmt.Printf("killed (pid %d)\n", pid)
+	return nil
+}
+
+// DaemonStatusString returns a human readable status of the background daemon.
+func DaemonStatusString() string {
+	pid, err := readPid()
+	if err != nil {
+		return "daemon: not running"
+	}
+	if processAlive(pid) {
+		return fmt.Sprintf("daemon: running (pid %d)", pid)
+	}
+	return "daemon: not running (stale pid file)"
+}
+
+----------
+./internal/termuxcam/daemon_process_unix.go
+//go:build !windows
+
+package termuxcam
+
+import (
+	"os/exec"
+	"syscall"
+)
+
+func configureDaemonProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}
+
+----------
+./internal/termuxcam/daemon_process_windows.go
+package termuxcam
+
+import (
+	"os/exec"
+	"syscall"
+)
+
+const detachedProcess uint32 = 0x00000008
+
+func configureDaemonProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | detachedProcess,
+	}
+}
+
+----------
+./internal/termuxcam/dns.go
+package termuxcam
+
+import (
+	"context"
+	"net"
+	"os"
+	"time"
+)
+
+// publicDNS is used when the system has no resolver configuration. Android/Termux
+// has no /etc/resolv.conf, so Go falls back to [::1]:53, where nothing is listening.
+var publicDNS = []string{"8.8.8.8:53", "1.1.1.1:53"}
+
+func init() {
+	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+		return // system resolver config exists: keep Go's default behaviour
+	}
+
+	net.DefaultResolver = &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second}
+			var lastErr error
+			for _, server := range publicDNS {
+				conn, err := d.DialContext(ctx, network, server)
+				if err == nil {
+					return conn, nil
+				}
+				lastErr = err
+			}
+			return nil, lastErr
+		},
+	}
+}
+
+----------
+./internal/termuxcam/logs.go
+package termuxcam
+
+import (
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+func RotateLogs() {
+	config := GetConfig()
+	if config.KeepLogsDays <= 0 {
+		config.KeepLogsDays = 3
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -config.KeepLogsDays)
+	logDir := filepath.Join(GetBinaryDir(), "camera_captures")
+
+	filepath.Walk(logDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(info.Name(), ".log") && info.ModTime().Before(cutoff) {
+			if err := os.Remove(path); err == nil {
+				log.Printf("🗑️ Log antigo removido: %s", path)
+			}
+		}
+		return nil
+	})
+}
+
+----------
+./internal/termuxcam/metadata.go
+package termuxcam
+
+import (
+	"fmt"
+	"os/exec"
+	"time"
+)
+
+func AddExifMetadata(filePath string) error {
+	if _, err := exec.LookPath("exiftool"); err == nil {
+		cmd := exec.Command("exiftool",
+			"-overwrite_original",
+			fmt.Sprintf("-DateTime=%s", time.Now().Format("2006:01:02 15:04:05")),
+			fmt.Sprintf("-Description=TermuxCam %s", time.Now().Format("02/01/2006 15:04:05")),
+			"-Make=Termux",
+			"-Model=Android",
+			filePath,
+		)
+		return cmd.Run()
+	}
+
+	if _, err := exec.LookPath("jhead"); err == nil {
+		cmd := exec.Command("jhead",
+			fmt.Sprintf("-ts%s", time.Now().Format("2006:01:02_15:04:05")),
+			filePath,
+		)
+		return cmd.Run()
+	}
+
+	return nil
+}
+
+----------
+./internal/termuxcam/run.go
+package termuxcam
+
+import (
+	"log"
+	"os"
+	"path/filepath"
+
+	"github.com/alecthomas/kong"
+)
+
+func Run() {
+	InitState()
+
+	// Fast-path for the daemon child: if the environment marker is set, we are
+	// the detached process spawned by Daemonize(). Skip the full CLI parsing,
+	// wire up logging, and run the service loop.
+	if os.Getenv(daemonEnvMarker) == "1" {
+		runDaemonChild()
+		return
+	}
+
+	// Normal path: parse the full CLI.
+	ctx := kong.Parse(&CLI,
+		kong.Name("termuxcam"),
+		kong.Description("Go project to access the front camera from Termux"),
+		kong.UsageOnError(),
+		kong.ConfigureHelp(kong.HelpOptions{
+			Compact: true,
+		}),
+	)
+
+	logFile := resolveBinaryPath(CLI.LogFile)
+	if err := os.MkdirAll(filepath.Dir(logFile), 0755); err != nil {
+		log.Fatalf("create log directory: %v", err)
+	}
+
+	f, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err == nil {
+		defer func() {
+			if err := f.Close(); err != nil {
+				log.Printf("close log file: %v", err)
+			}
+		}()
+		log.SetOutput(f)
+	} else {
+		log.Printf("open log file: %v", err)
+	}
+
+	if err := ctx.Run(); err != nil {
+		log.Fatalf("Command failed: %v", err)
+	}
+}
+
+// runDaemonChild parses only the flags that Daemonize() passes to the child
+// process, redirects logging, and runs the service loop.
+func runDaemonChild() {
+	var child struct {
+		Start      struct{} `cmd:""`
+		Port       int      `help:"port" default:"8080"`
+		LogFile    string   `help:"log"`
+		ConfigFile string   `help:"config"`
+	}
+
+	kong.Parse(&child,
+		kong.Name("termuxcam-daemon"),
+		kong.Exit(func(int) {}), // never terminate on parse error
+	)
+
+	logFile := resolveBinaryPath(child.LogFile)
+	if err := os.MkdirAll(filepath.Dir(logFile), 0755); err != nil {
+		log.Fatalf("create log directory: %v", err)
+	}
+	f, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err == nil {
+		defer func() {
+			if err := f.Close(); err != nil {
+				log.Printf("close log file: %v", err)
+			}
+		}()
+		log.SetOutput(f)
+	} else {
+		log.Printf("open log file: %v", err)
+	}
+
+	RunDaemonChild(child.Port, child.ConfigFile)
+}
+
+----------
+./internal/termuxcam/state.go
+package termuxcam
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+var (
+	appState AppState
+	stateMu  sync.RWMutex
+)
+
+type AppState struct {
+	LastCapture   time.Time `json:"last_capture"`
+	ErrorCount    int       `json:"error_count"`
+	TotalPhotos   int       `json:"total_photos"`
+	FailedUploads int       `json:"failed_uploads"`
+	StartTime     time.Time `json:"start_time"`
+}
+
+func InitState() {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	appState.StartTime = time.Now()
+}
+
+func GetStatus() string {
+	stateMu.RLock()
+	defer stateMu.RUnlock()
+
+	status := map[string]interface{}{
+		"status":         "running",
+		"last_capture":   appState.LastCapture.Format(time.RFC3339),
+		"total_photos":   appState.TotalPhotos,
+		"error_count":    appState.ErrorCount,
+		"failed_uploads": appState.FailedUploads,
+		"uptime":         time.Since(appState.StartTime).Round(time.Second).String(),
+		"config":         GetConfig(),
+	}
+
+	data, _ := json.MarshalIndent(status, "", "  ")
+	return string(data)
+}
+
+func GetBinaryDir() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return filepath.Dir(execPath)
+}
+
+func resolveBinaryPath(path string) string {
+	if filepath.IsAbs(path) {
+		return path
+	}
+
+	workDir, err := os.Getwd()
+	if err == nil {
+		cwdCandidate := filepath.Join(workDir, path)
+		if _, statErr := os.Stat(cwdCandidate); statErr == nil {
+			return cwdCandidate
+		}
+	}
+
+	return filepath.Join(GetBinaryDir(), path)
+}
+
+func IncrementErrorCount() {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	appState.ErrorCount++
+}
+
+func IncrementFailedUploads() {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	appState.FailedUploads++
+}
+
+func IncrementTotalPhotos() {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	appState.TotalPhotos++
+}
+
+func SetLastCapture(t time.Time) {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	appState.LastCapture = t
+}
+
+----------
+./internal/termuxcam/system.go
+package termuxcam
+
+import (
+	"bufio"
+	"fmt"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type SystemInfo struct {
+	DeviceModel    string       `json:"device_model"`
+	AndroidVersion string       `json:"android_version"`
+	TermuxVersion  string       `json:"termux_version"`
+	APILevel       int          `json:"api_level"`
+	CPUArch        string       `json:"cpu_arch"`
+	CPUCores       int          `json:"cpu_cores"`
+	MemoryTotal    string       `json:"memory_total"`
+	MemoryFree     string       `json:"memory_free"`
+	StorageTotal   string       `json:"storage_total"`
+	StorageFree    string       `json:"storage_free"`
+	BatteryLevel   int          `json:"battery_level"`
+	BatteryStatus  string       `json:"battery_status"`
+	Uptime         string       `json:"uptime"`
+	Cameras        []CameraInfo `json:"cameras"`
+	Timestamp      time.Time    `json:"timestamp"`
+}
+
+type CameraInfo struct {
+	ID     string `json:"id"`
+	Facing string `json:"facing"`
+}
+
+func GetSystemInfo() SystemInfo {
+	info := SystemInfo{
+		Timestamp: time.Now(),
+	}
+
+	info.DeviceModel = getDeviceModel()
+	info.AndroidVersion = getAndroidVersion()
+	info.TermuxVersion = getTermuxVersion()
+	info.APILevel = getAPILevel()
+	info.CPUArch = getCPUArch()
+	info.CPUCores = getCPUCores()
+	info.Uptime = getUptime()
+
+	info.MemoryTotal, info.MemoryFree = getMemoryInfo()
+	info.StorageTotal, info.StorageFree = getStorageInfo()
+	info.BatteryLevel, info.BatteryStatus = getBatteryInfo()
+	info.Cameras = getCameraInfo()
+
+	return info
+}
+
+func getDeviceModel() string {
+	cmd := exec.Command("getprop", "ro.product.model")
+	output, err := cmd.Output()
+	if err != nil {
+		return "Desconhecido"
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func getAndroidVersion() string {
+	cmd := exec.Command("getprop", "ro.build.version.release")
+	output, err := cmd.Output()
+	if err != nil {
+		return "Desconhecida"
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func getAPILevel() int {
+	cmd := exec.Command("getprop", "ro.build.version.sdk")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	val, _ := strconv.Atoi(strings.TrimSpace(string(output)))
+	return val
+}
+
+func getTermuxVersion() string {
+	cmd := exec.Command("pkg", "list-installed")
+	output, err := cmd.Output()
+	if err != nil {
+		return "Desconhecida"
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "termux/") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				return parts[1]
+			}
+		}
+	}
+	return "Desconhecida"
+}
+
+func getCPUArch() string {
+	return runtime.GOARCH
+}
+
+func getCPUCores() int {
+	cmd := exec.Command("nproc")
+	output, err := cmd.Output()
+	if err != nil {
+		return runtime.NumCPU()
+	}
+	cores, _ := strconv.Atoi(strings.TrimSpace(string(output)))
+	if cores == 0 {
+		return runtime.NumCPU()
+	}
+	return cores
+}
+
+func getUptime() string {
+	cmd := exec.Command("uptime")
+	output, err := cmd.Output()
+	if err != nil {
+		return "Desconhecido"
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func getMemoryInfo() (total, free string) {
+	cmd := exec.Command("free", "-h")
+	output, err := cmd.Output()
+	if err != nil {
+		return "N/A", "N/A"
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "Mem:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 4 {
+				total = parts[1]
+				free = parts[3]
+				return
+			}
+		}
+	}
+	return "N/A", "N/A"
+}
+
+func getStorageInfo() (total, free string) {
+	cmd := exec.Command("df", "-h", ".")
+	output, err := cmd.Output()
+	if err != nil {
+		return "N/A", "N/A"
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	lines := []string{}
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+
+	if len(lines) >= 2 {
+		parts := strings.Fields(lines[1])
+		if len(parts) >= 4 {
+			total = parts[1]
+			free = parts[3]
+			return
+		}
+	}
+	return "N/A", "N/A"
+}
+
+func getBatteryInfo() (level int, status string) {
+	cmd := exec.Command("termux-battery-status")
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, "Desconhecido"
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "\"percentage\"") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				val := strings.TrimSuffix(strings.TrimSpace(parts[1]), ",")
+				level, _ = strconv.Atoi(val)
+			}
+		}
+		if strings.Contains(line, "\"status\"") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				status = strings.Trim(strings.TrimSpace(parts[1]), "\",")
+			}
+		}
+	}
+	return
+}
+
+func getCameraInfo() []CameraInfo {
+	var cameras []CameraInfo
+
+	cmd := exec.Command("termux-camera-info")
+	output, err := cmd.Output()
+	if err != nil {
+		return cameras
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "\"id\"") && strings.Contains(line, "\"facing\"") {
+			var id, facing string
+
+			idParts := strings.Split(line, "\"id\"")
+			if len(idParts) >= 2 {
+				idSubParts := strings.Split(idParts[1], ":")
+				if len(idSubParts) >= 2 {
+					id = strings.Trim(strings.TrimSpace(idSubParts[1]), "\",")
+				}
+			}
+
+			facingParts := strings.Split(line, "\"facing\"")
+			if len(facingParts) >= 2 {
+				facingSubParts := strings.Split(facingParts[1], ":")
+				if len(facingSubParts) >= 2 {
+					facing = strings.Trim(strings.TrimSpace(facingSubParts[1]), "\",")
+				}
+			}
+
+			if id != "" && facing != "" {
+				cameras = append(cameras, CameraInfo{
+					ID:     id,
+					Facing: facing,
+				})
+			}
+		}
+	}
+
+	return cameras
+}
+
+func PrintSystemInfo() {
+	info := GetSystemInfo()
+
+	fmt.Println("📱 INFORMAÇÕES DO SISTEMA")
+	fmt.Println(strings.Repeat("=", 40))
+	fmt.Printf("📱 Dispositivo:     %s\n", info.DeviceModel)
+	fmt.Printf("🤖 Android:        %s (API %d)\n", info.AndroidVersion, info.APILevel)
+	fmt.Printf("📦 Termux:         %s\n", info.TermuxVersion)
+	fmt.Printf("🖥️  Arquitetura:    %s\n", info.CPUArch)
+	fmt.Printf("🧠 Núcleos CPU:    %d\n", info.CPUCores)
+	fmt.Printf("🔄 Uptime:         %s\n", info.Uptime)
+	fmt.Println()
+	fmt.Printf("💾 Memória Total:  %s\n", info.MemoryTotal)
+	fmt.Printf("💾 Memória Livre:  %s\n", info.MemoryFree)
+	fmt.Println()
+	fmt.Printf("📀 Armazenamento:  %s\n", info.StorageTotal)
+	fmt.Printf("📀 Livre:         %s\n", info.StorageFree)
+	fmt.Println()
+	fmt.Printf("🔋 Bateria:        %d%% (%s)\n", info.BatteryLevel, info.BatteryStatus)
+	fmt.Println()
+	fmt.Println("📷 Câmeras disponíveis:")
+	for _, cam := range info.Cameras {
+		fmt.Printf("  - ID: %s, Facing: %s\n", cam.ID, cam.Facing)
+	}
+	fmt.Println(strings.Repeat("=", 40))
+}
+
+func GetSystemInfoString() string {
+	info := GetSystemInfo()
+
+	var sb strings.Builder
+	sb.WriteString("📱 **SISTEMA - termuxcam**\n\n")
+	sb.WriteString(fmt.Sprintf("📱 **Dispositivo:** %s\n", info.DeviceModel))
+	sb.WriteString(fmt.Sprintf("🤖 **Android:** %s (API %d)\n", info.AndroidVersion, info.APILevel))
+	sb.WriteString(fmt.Sprintf("📦 **Termux:** %s\n", info.TermuxVersion))
+	sb.WriteString(fmt.Sprintf("🖥️ **Arquitetura:** %s\n", info.CPUArch))
+	sb.WriteString(fmt.Sprintf("🧠 **Núcleos CPU:** %d\n", info.CPUCores))
+	sb.WriteString(fmt.Sprintf("🔄 **Uptime:** %s\n", info.Uptime))
+	sb.WriteString(fmt.Sprintf("💾 **Memória:** %s (livre: %s)\n", info.MemoryTotal, info.MemoryFree))
+	sb.WriteString(fmt.Sprintf("📀 **Armazenamento:** %s (livre: %s)\n", info.StorageTotal, info.StorageFree))
+	sb.WriteString(fmt.Sprintf("🔋 **Bateria:** %d%% (%s)\n", info.BatteryLevel, info.BatteryStatus))
+	sb.WriteString("\n📷 **Câmeras:**\n")
+	for _, cam := range info.Cameras {
+		sb.WriteString(fmt.Sprintf("  - ID: %s, %s\n", cam.ID, cam.Facing))
+	}
+
+	return sb.String()
+}
+
+----------
+./internal/termuxcam/telegram.go
+package termuxcam
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+var Bot *TelegramBot
+
+type TelegramBot struct {
+	Token  string
+	ChatID string
+}
+
+func InitBot() {
+	config := GetConfig()
+	token := config.TelegramBotToken
+	chatID := config.TelegramChatID
+
+	if token != "" && chatID != "" {
+		Bot = &TelegramBot{Token: token, ChatID: chatID}
+	} else {
+		Bot = nil
+	}
+}
+
+func (b *TelegramBot) SendPhoto(filePath, caption string) error {
+	var buffer bytes.Buffer
+	writer := io.MultiWriter(&buffer)
+
+	boundary := fmt.Sprintf("----WebKitFormBoundary%d", time.Now().UnixNano())
+
+	fmt.Fprintf(writer, "--%s\r\n", boundary)
+	fmt.Fprintf(writer, "Content-Disposition: form-data; name=\"chat_id\"\r\n\r\n%s\r\n", b.ChatID)
+
+	fmt.Fprintf(writer, "--%s\r\n", boundary)
+	fmt.Fprintf(writer, "Content-Disposition: form-data; name=\"caption\"\r\n\r\n%s\r\n", caption)
+
+	fileData, err := os.ReadFile(filePath)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(writer, "--%s\r\n", boundary)
+	fmt.Fprintf(writer, "Content-Disposition: form-data; name=\"photo\"; filename=\"%s\"\r\n", filepath.Base(filePath))
+	fmt.Fprintf(writer, "Content-Type: image/jpeg\r\n\r\n")
+
+	if _, err := writer.Write(fileData); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(writer, "\r\n--%s--\r\n", boundary)
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", b.Token)
+	req, err := http.NewRequest("POST", url, &buffer)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "multipart/form-data; boundary="+boundary)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+func (b *TelegramBot) SendMessage(text string) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", b.Token)
+
+	data := map[string]interface{}{
+		"chat_id":    b.ChatID,
+		"text":       text,
+		"parse_mode": "Markdown",
+	}
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+----------
+./internal/termuxcam/telegram_poll.go
+package termuxcam
+
+import (
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"html"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+// captureMu serialises captures from the daemon, the HTTP API and Telegram commands,
+// so one capture cycle never clears the temporary files of another.
+var captureMu sync.Mutex
+
+const pollTimeoutSecs = 30
+
+const logTailBytes = 600
+
+const rasplabMaxResponseBytes = 3500
+
+const rule = "━━━━━━━━━━━━━━━━━━━━"
+
+const hintFooter = "ℹ️ Send /help for more commands."
+
+const helpText = `<b>termuxcam commands</b>
+/status - service status
+/system - system information
+/version - version
+/config - show configuration
+/config set key=value - change a setting
+/config reload - reload the configuration file
+/rasplab - Raspberry Pi information
+/capture [camera] [burst] - take photos (camera: -1 front, 0 back, 1 front; burst: 1-5)
+/log - send the latest log output
+/torch on|off - flashlight
+/help - this message`
+
+var uptimeRe = regexp.MustCompile(`up\s+(.*?),\s+\d+\s+users?`)
+
+type tgUpdate struct {
+	UpdateID int64 `json:"update_id"`
+	Message  *struct {
+		Text string `json:"text"`
+		Chat struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	} `json:"message"`
+}
+
+type tgUpdates struct {
+	OK          bool       `json:"ok"`
+	Result      []tgUpdate `json:"result"`
+	Description string     `json:"description"`
+}
+
+// StartTelegramPoller receives commands with long polling (getUpdates). No webhook is needed.
+// Only messages from the configured Telegram chat are accepted.
+func StartTelegramPoller() {
+	if Bot == nil {
+		return
+	}
+	go supervisePollLoop()
+}
+
+func supervisePollLoop() {
+	for {
+		if !runPollLoop() {
+			return
+		}
+		log.Println("Telegram poller stopped after panic; restarting")
+		time.Sleep(time.Second)
+	}
+}
+
+func runPollLoop() (panicked bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("Telegram poller panic: %v", recovered)
+			panicked = true
+		}
+	}()
+	pollLoop()
+	return false
+}
+
+func pollLoop() {
+	// Skip commands sent while the service was down: start after the newest update.
+	var offset int64
+	if last, err := getUpdates(-1, 0); err == nil && len(last.Result) > 0 {
+		offset = last.Result[len(last.Result)-1].UpdateID + 1
+	}
+	log.Println("Telegram command polling started")
+
+	for {
+		updates, err := getUpdates(offset, pollTimeoutSecs)
+		if err != nil {
+			log.Printf("telegram polling: %s", redact(err))
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		for _, u := range updates.Result {
+			offset = u.UpdateID + 1
+			handleUpdate(u)
+		}
+	}
+}
+
+func getUpdates(offset int64, timeout int) (*tgUpdates, error) {
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?timeout=%d&offset=%d",
+		Bot.Token, timeout, offset)
+	client := &http.Client{Timeout: time.Duration(timeout+10) * time.Second}
+	resp, err := client.Get(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var out tgUpdates
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if !out.OK {
+		return nil, fmt.Errorf("telegram: %s", out.Description)
+	}
+	return &out, nil
+}
+
+func handleUpdate(u tgUpdate) {
+	if u.Message == nil || strings.TrimSpace(u.Message.Text) == "" {
+		return
+	}
+	if strconv.FormatInt(u.Message.Chat.ID, 10) != Bot.ChatID {
+		log.Printf("ignored message from unauthorized chat %d", u.Message.Chat.ID)
+		return
+	}
+
+	text := strings.TrimSpace(u.Message.Text)
+	log.Printf("telegram command: %s", strings.Fields(text)[0])
+	if reply := runCommand(text); reply != "" {
+		sendText(reply)
+	}
+}
+
+// runCommand returns an HTML message for Telegram.
+func runCommand(text string) string {
+	fields := strings.Fields(text)
+	cmd := strings.ToLower(strings.TrimPrefix(fields[0], "/"))
+	if i := strings.Index(cmd, "@"); i >= 0 { // "/help@MyBot" in group chats
+		cmd = cmd[:i]
+	}
+	args := fields[1:]
+
+	switch cmd {
+	case "help", "start":
+		return helpText
+	case "version":
+		return fmt.Sprintf("<b>termuxcam</b> v%s\nGo project for camera capture in Termux", ProjectVersion)
+	case "status":
+		return html.EscapeString(fmt.Sprint(GetStatus())) + "\n\n" + hintFooter
+	case "system":
+		return systemStatusText()
+	case "rasplab":
+		return rasplabCommand()
+	case "config":
+		return configCommand(args)
+	case "capture":
+		return captureCommand(args)
+	case "log":
+		return logCommand()
+	case "torch":
+		return torchCommand(args)
+	default:
+		return "Unknown command.\n" + hintFooter
+	}
+}
+
+func rasplabCommand() string {
+	endpoint := GetConfig().RasplabEndpoint
+	parsedEndpoint, err := url.ParseRequestURI(endpoint)
+	if err != nil || parsedEndpoint.Scheme != "https" || parsedEndpoint.Host == "" {
+		return "rasplab endpoint must be a valid HTTPS URL"
+	}
+
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "rasplab request failed: " + html.EscapeString(err.Error())
+	}
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: true,
+			},
+		},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "rasplab request failed: " + html.EscapeString(err.Error())
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("rasplab API returned HTTP %d", resp.StatusCode)
+	}
+
+	const maxResponseBytes = 64 * 1024
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return "could not read rasplab response: " + html.EscapeString(err.Error())
+	}
+	if len(body) > maxResponseBytes {
+		return "rasplab response is too large"
+	}
+
+	var telemetry struct {
+		Name                  string   `json:"name"`
+		Version               string   `json:"version"`
+		CPUTemperatureCelsius *float64 `json:"cpu_temperature_celsius"`
+		MemoryUsedMB          *int64   `json:"memory_used_mb"`
+		MemoryTotalMB         *int64   `json:"memory_total_mb"`
+		UptimeSeconds         *int64   `json:"uptime_seconds"`
+		IP                    string   `json:"ip"`
+		Hostname              string   `json:"hostname"`
+	}
+	if err := json.Unmarshal(body, &telemetry); err != nil {
+		return "rasplab API returned invalid JSON: " + html.EscapeString(err.Error())
+	}
+	name := html.EscapeString(orUnknown(telemetry.Name))
+	version := html.EscapeString(orUnknown(telemetry.Version))
+	cpuTemperature := "unknown"
+	if telemetry.CPUTemperatureCelsius != nil {
+		cpuTemperature = fmt.Sprintf("%.1f °C", *telemetry.CPUTemperatureCelsius)
+	}
+	memoryUsed := formatRasplabMemory(telemetry.MemoryUsedMB)
+	memoryTotal := formatRasplabMemory(telemetry.MemoryTotalMB)
+	uptime := formatRasplabUptime(telemetry.UptimeSeconds)
+	ip := html.EscapeString(orUnknown(telemetry.IP))
+	hostname := html.EscapeString(orUnknown(telemetry.Hostname))
+
+	result := fmt.Sprintf(
+		"📊 <b>%s v%s — telemetry</b>\n🌡 CPU temp: <code>%s</code>\n🧠 RAM: <code>%s MB / %s MB</code>\n⏱ Uptime: <code>%s</code>\n🌐 IP: <code>%s</code>\n🖥 Hostname: <code>%s</code>",
+		name, version, html.EscapeString(cpuTemperature), html.EscapeString(memoryUsed),
+		html.EscapeString(memoryTotal), html.EscapeString(uptime), ip, hostname,
+	)
+	if len(result) > rasplabMaxResponseBytes {
+		return "rasplab response is too large to send to Telegram"
+	}
+	return result
+}
+
+func formatRasplabMemory(memoryMB *int64) string {
+	if memoryMB == nil || *memoryMB < 0 {
+		return "unknown"
+	}
+	return strconv.FormatInt(*memoryMB, 10)
+}
+
+func formatRasplabUptime(uptimeSeconds *int64) string {
+	if uptimeSeconds == nil || *uptimeSeconds < 0 {
+		return "unknown"
+	}
+
+	days := *uptimeSeconds / 86400
+	hours := (*uptimeSeconds % 86400) / 3600
+	minutes := (*uptimeSeconds % 3600) / 60
+	return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+}
+
+func configCommand(args []string) string {
+	if len(args) == 0 {
+		return html.EscapeString(fmt.Sprint(GetConfig()))
+	}
+	switch args[0] {
+	case "get":
+		return html.EscapeString(fmt.Sprint(GetConfig()))
+	case "reload":
+		if err := LoadConfig(CLI.ConfigFile); err != nil {
+			return errText(err)
+		}
+		return "configuration reloaded"
+	case "set":
+		if len(args) < 2 || !strings.Contains(args[1], "=") {
+			return "usage: /config set key=value"
+		}
+		key := strings.ToLower(strings.SplitN(args[1], "=", 2)[0])
+		for _, banned := range []string{"key", "token", "password", "secret"} {
+			if strings.Contains(key, banned) {
+				return "this setting can only be changed on the device"
+			}
+		}
+		if err := SetConfigValue(args[1]); err != nil {
+			return errText(err)
+		}
+		return "configuration updated"
+	}
+	return "usage: /config [get|reload|set key=value]"
+}
+
+func captureCommand(args []string) string {
+	camera, burst := -1, 1
+	if len(args) >= 1 {
+		v, err := strconv.Atoi(args[0])
+		if err != nil || v < -1 || v > 1 {
+			return "camera must be -1, 0 or 1"
+		}
+		camera = v
+	}
+	if len(args) >= 2 {
+		v, err := strconv.Atoi(args[1])
+		if err != nil || v < 1 || v > 5 {
+			return "burst must be between 1 and 5"
+		}
+		burst = v
+	}
+
+	cameraID, label := FrontCameraHWID, "Front"
+	if camera == 0 {
+		cameraID, label = BackCameraHWID, "Back"
+	}
+
+	if !captureMu.TryLock() {
+		return "another capture is already in progress"
+	}
+	go func() {
+		defer captureMu.Unlock()
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("Telegram capture panic: %v", recovered)
+				sendText("capture failed unexpectedly")
+			}
+		}()
+		sendText(runCapture(cameraID, label, burst))
+	}()
+	return "capture started; the result will be sent when it finishes"
+}
+
+func runCapture(cameraID, label string, burst int) string {
+	files, captureErr := CaptureBurst(cameraID, burst)
+	sent, failed := 0, 0
+	for _, f := range files {
+		if err := AddExifMetadata(f); err != nil {
+			log.Printf("Failed to add metadata: %v", err)
+		}
+		caption := fmt.Sprintf("📸 %s camera (command)\n🕐 %s",
+			label, time.Now().Format("02/01/2006 15:04:05"))
+
+		if err := Bot.SendPhoto(f, caption); err != nil {
+			log.Printf("Photo upload failed: %s", redact(err))
+			IncrementFailedUploads()
+			failed++
+			if pErr := preserveFailedPhoto(f); pErr != nil {
+				log.Printf("Failed to preserve photo after upload failure: %v", pErr)
+			}
+			continue
+		}
+
+		IncrementTotalPhotos()
+		SetLastCapture(time.Now())
+		sent++
+		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+			log.Printf("Failed to remove processed photo: %v", err)
+		}
+	}
+
+	if captureErr != nil {
+		return fmt.Sprintf("capture failed: %s\nsent %d photo(s), %d failed",
+			html.EscapeString(captureErr.Error()), sent, failed)
+	}
+	return fmt.Sprintf("sent %d photo(s), %d failed", sent, failed)
+}
+
+func logCommand() string {
+	file, err := os.Open(resolveBinaryPath(CLI.LogFile))
+	if err != nil {
+		return "log file unavailable: " + html.EscapeString(err.Error())
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return "cannot read log file: " + html.EscapeString(err.Error())
+	}
+	if info.Size() > logTailBytes {
+		if _, err := file.Seek(-logTailBytes, io.SeekEnd); err != nil {
+			return "cannot read log file: " + html.EscapeString(err.Error())
+		}
+	}
+	contents, err := io.ReadAll(io.LimitReader(file, logTailBytes))
+	if err != nil {
+		return "cannot read log file: " + html.EscapeString(err.Error())
+	}
+	text := strings.ToValidUTF8(string(contents), "�")
+	if info.Size() > logTailBytes {
+		text = "...\n" + text
+	}
+	return "<b>Latest logs</b>\n<pre>" + html.EscapeString(text) + "</pre>"
+}
+
+func torchCommand(args []string) string {
+	if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
+		return "usage: /torch on|off"
+	}
+	out, err := exec.Command("termux-torch", args[0]).CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("failed: %s (%s)",
+			html.EscapeString(err.Error()), html.EscapeString(strings.TrimSpace(string(out))))
+	}
+	return "flashlight " + args[0]
+}
+
+// systemStatusText builds the /system message from GetSystemInfo, styled like the noipclient reports.
+func systemStatusText() string {
+	info := GetSystemInfo()
+
+	termux := orUnknown(info.TermuxVersion)
+	if termux == "unknown" {
+		termux = orUnknown(os.Getenv("TERMUX_VERSION"))
+	}
+
+	var sb strings.Builder
+	writeLine := func(line string) {
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+	}
+	writeLine("📱 <b>System status</b>")
+	writeLine(rule)
+
+	sb.WriteString("📱 <b>Device</b>\n")
+	writeLine(row("Model", orUnknown(info.DeviceModel)))
+	writeLine(row("Android", fmt.Sprintf("%s (API %d)", orUnknown(info.AndroidVersion), info.APILevel)))
+	writeLine(row("Termux", termux))
+	writeLine(row("Architecture", info.CPUArch))
+	writeLine(row("CPU cores", strconv.Itoa(info.CPUCores)))
+	sb.WriteByte('\n')
+
+	sb.WriteString("⏱ <b>Runtime</b>\n")
+	writeLine(row("Uptime", cleanUptime(info.Uptime)))
+	writeLine(row("Checked", info.Timestamp.Format("02/01/2006 15:04:05")))
+	sb.WriteByte('\n')
+
+	sb.WriteString("💾 <b>Resources</b>\n")
+	writeLine(row("Memory", fmt.Sprintf("%s total, %s free", info.MemoryTotal, info.MemoryFree)))
+	writeLine(row("Storage", fmt.Sprintf("%s total, %s free", info.StorageTotal, info.StorageFree)))
+	writeLine(row("Battery", fmt.Sprintf("%d%% (%s)", info.BatteryLevel, orUnknown(info.BatteryStatus))))
+	sb.WriteByte('\n')
+
+	sb.WriteString("📷 <b>Cameras</b>\n")
+	if len(info.Cameras) == 0 {
+		sb.WriteString("• none detected\n")
+	}
+	for _, cam := range info.Cameras {
+		writeLine(row("ID "+cam.ID, cam.Facing))
+	}
+
+	sb.WriteByte('\n')
+	sb.WriteString(hintFooter)
+	return sb.String()
+}
+
+// row renders one "• label: value" line, with the value in monospace.
+func row(label, value string) string {
+	return fmt.Sprintf("• %s: <code>%s</code>", html.EscapeString(label), html.EscapeString(value))
+}
+
+// orUnknown replaces the Portuguese placeholders returned by system.go.
+func orUnknown(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" || v == "N/A" || strings.HasPrefix(v, "Desconhec") {
+		return "unknown"
+	}
+	return v
+}
+
+// cleanUptime keeps only the duration from the `uptime` output.
+func cleanUptime(raw string) string {
+	if m := uptimeRe.FindStringSubmatch(raw); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return orUnknown(raw)
+}
+
+// sendText sends an HTML message. Telegram limits messages to 4096 characters, so long replies are split.
+func sendText(text string) {
+	runes := []rune(text)
+	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", Bot.Token)
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	for start := 0; start < len(runes); start += 4000 {
+		end := start + 4000
+		if end > len(runes) {
+			end = len(runes)
+		}
+		form := url.Values{
+			"chat_id":                  {Bot.ChatID},
+			"text":                     {string(runes[start:end])},
+			"parse_mode":               {"HTML"},
+			"disable_web_page_preview": {"true"},
+		}
+		resp, err := client.PostForm(endpoint, form)
+		if err != nil {
+			log.Printf("telegram reply failed: %s", redact(err))
+			return
+		}
+		resp.Body.Close()
+	}
+}
+
+func errText(err error) string {
+	return "error: " + html.EscapeString(err.Error())
+}
+
+// redact removes the bot token from errors, because request URLs contain it.
+func redact(err error) string {
+	return strings.ReplaceAll(err.Error(), Bot.Token, "***")
+}
+
+----------
+./internal/termuxcam/telegram_poll_test.go
+package termuxcam
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestRasplabCommandFormatsTelemetryAndEscapesHTML(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"rasp<lab>","version":"0.1.0","cpu_temperature_celsius":47.236,"memory_used_mb":742,"memory_total_mb":905,"uptime_seconds":2790654,"ip":"192.168.1.15","hostname":"rasp<lab>"}`))
+	}))
+	defer server.Close()
+
+	setTestConfig(t, Config{RasplabEndpoint: server.URL})
+	got := rasplabCommand()
+	for _, want := range []string{
+		"📊 <b>rasp&lt;lab&gt; v0.1.0 — telemetry</b>",
+		"🌡 CPU temp: <code>47.2 °C</code>",
+		"🧠 RAM: <code>742 MB / 905 MB</code>",
+		"⏱ Uptime: <code>32d 7h 10m</code>",
+		"🌐 IP: <code>192.168.1.15</code>",
+		"🖥 Hostname: <code>rasp&lt;lab&gt;</code>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rasplabCommand() = %q, want it to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "<pre>") || strings.Contains(got, `"name"`) {
+		t.Errorf("rasplabCommand() = %q, want formatted telemetry instead of raw JSON", got)
+	}
+}
+
+func TestRasplabCommandRejectsInvalidEndpointAndJSON(t *testing.T) {
+	setTestConfig(t, Config{RasplabEndpoint: "http://localhost/rasplab"})
+	if got := rasplabCommand(); got != "rasplab endpoint must be a valid HTTPS URL" {
+		t.Fatalf("rasplabCommand() = %q, want invalid HTTPS endpoint response", got)
+	}
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not json"))
+	}))
+	defer server.Close()
+
+	ConfigMu.Lock()
+	AppConfig.RasplabEndpoint = server.URL
+	ConfigMu.Unlock()
+	if got := rasplabCommand(); !strings.HasPrefix(got, "rasplab API returned invalid JSON:") {
+		t.Fatalf("rasplabCommand() = %q, want invalid JSON response", got)
+	}
+}
+
+func TestCaptureCommandReturnsWhenCaptureIsBusy(t *testing.T) {
+	captureMu.Lock()
+	defer captureMu.Unlock()
+
+	got := captureCommand([]string{"0", "4"})
+	if got != "another capture is already in progress" {
+		t.Fatalf("captureCommand() = %q, want busy response", got)
+	}
+}
+
+func TestLogCommandReturnsEscapedRecentLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "capture.log")
+	if err := os.WriteFile(logPath, []byte("previous line\n<unsafe>\nlatest line"), 0600); err != nil {
+		t.Fatalf("write test log: %v", err)
+	}
+
+	previousLogFile := CLI.LogFile
+	CLI.LogFile = logPath
+	t.Cleanup(func() { CLI.LogFile = previousLogFile })
+
+	got := logCommand()
+	if !strings.Contains(got, "latest line") || !strings.Contains(got, "&lt;unsafe&gt;") {
+		t.Fatalf("logCommand() = %q, want recent escaped log contents", got)
+	}
+}
+
+func TestLogCommandLimitsOutput(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "capture.log")
+	contents := strings.Repeat("x", logTailBytes+100)
+	if err := os.WriteFile(logPath, []byte(contents), 0600); err != nil {
+		t.Fatalf("write test log: %v", err)
+	}
+
+	previousLogFile := CLI.LogFile
+	CLI.LogFile = logPath
+	t.Cleanup(func() { CLI.LogFile = previousLogFile })
+
+	got := logCommand()
+	if len(got) > logTailBytes+100 {
+		t.Fatalf("logCommand() length = %d, want bounded output", len(got))
+	}
+	if !strings.Contains(got, "...\n") {
+		t.Fatalf("logCommand() = %q, want truncation marker", got)
+	}
+}
+
+----------
+./internal/termuxcam/version.go
+package termuxcam
+
+const ProjectVersion = "0.3.0"
+

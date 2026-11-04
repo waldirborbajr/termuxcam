@@ -123,6 +123,7 @@ func RunDaemonChild(port int, configFile string) {
 
 	InitBot()
 	StartTelegramPoller()
+	go StartMQTT()
 
 	if port > 0 {
 		go StartAPIServer(port)

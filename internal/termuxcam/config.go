@@ -29,6 +29,9 @@ type Config struct {
 	TelegramChatID   string        `toml:"tg_chat_id" json:"-"`
 	EncryptionKey    string        `toml:"encryption_key" json:"-"`
 	Debug            bool          `toml:"debug"`
+	MQTTBroker       string        `toml:"mqtt_broker"`
+	MQTTUser         string        `toml:"mqtt_user"`
+	MQTTPass         string        `toml:"mqtt_pass" json:"-"`
 }
 
 func (c Config) String() string {
@@ -76,6 +79,9 @@ func LoadConfig(configFile string) error {
 		TelegramChatID   string `toml:"tg_chat_id"`
 		EncryptionKey    string `toml:"encryption_key"`
 		Debug            bool   `toml:"debug"`
+		MQTTBroker       string `toml:"mqtt_broker"`
+		MQTTUser         string `toml:"mqtt_user"`
+		MQTTPass         string `toml:"mqtt_pass"`
 	}{
 		Capture:         "5m",
 		Camera:          1,
@@ -104,6 +110,9 @@ func LoadConfig(configFile string) error {
 	AppConfig.RasplabEndpoint = parsed.RasplabEndpoint
 	AppConfig.EncryptionKey = parsed.EncryptionKey
 	AppConfig.Debug = parsed.Debug
+	AppConfig.MQTTBroker = parsed.MQTTBroker
+	AppConfig.MQTTUser = parsed.MQTTUser
+	AppConfig.MQTTPass = parsed.MQTTPass
 	return nil
 }
 

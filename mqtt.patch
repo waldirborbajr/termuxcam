@@ -1,0 +1,213 @@
+diff --git a/internal/termuxcam/mqtt.go b/internal/termuxcam/mqtt.go
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/internal/termuxcam/mqtt.go
+@@ -0,0 +1,83 @@
++package termuxcam
++
++import (
++	"fmt"
++	"log"
++	"strings"
++	"sync"
++	"time"
++
++	mqtt "github.com/eclipse/paho.mqtt.golang"
++)
++
++const mqttPrefix = "casa"
++
++var (
++	mqttMu    sync.RWMutex
++	mqttTemp  = map[string]float64{}
++	mqttHum   = map[string]float64{}
++	mqttWhen  = map[string]time.Time{}
++	mqttAlive = map[string]bool{}
++)
++
++// StartMQTT connects to the broker and caches retained sensor readings.
++// No-op if mqtt_broker is empty. Call it in a goroutine.
++func StartMQTT() {
++	broker := GetConfig().MQTTBroker
++	if broker == "" {
++		log.Println("MQTT: no broker configured, sensor readings disabled")
++		return
++	}
++
++	opts := mqtt.NewClientOptions().
++		AddBroker(broker).
++		SetClientID("termuxcam").
++		SetAutoReconnect(true).
++		SetOnConnectHandler(func(c mqtt.Client) {
++			log.Printf("MQTT: connected to %s", broker)
++			topics := map[string]byte{
++				mqttPrefix + "/+/temperatura": 1,
++				mqttPrefix + "/+/umidade":     1,
++				mqttPrefix + "/+/status":      1,
++			}
++			c.SubscribeMultiple(topics, onMQTT)
++		})
++
++	if u := GetConfig().MQTTUser; u != "" {
++		opts.SetUsername(u)
++	}
++	if p := GetConfig().MQTTPass; p != "" {
++		opts.SetPassword(p)
++	}
++
++	if t := mqtt.NewClient(opts).Connect(); t.Wait() && t.Error() != nil {
++		log.Printf("MQTT: connect failed: %v", t.Error())
++	}
++}
++
++func onMQTT(_ mqtt.Client, m mqtt.Message) {
++	parts := strings.Split(m.Topic(), "/")
++	if len(parts) != 3 {
++		return
++	}
++	room, field := parts[1], parts[2]
++	payload := strings.TrimSpace(string(m.Payload()))
++	var v float64
++	fmt.Sscanf(payload, "%f", &v)
++
++	mqttMu.Lock()
++	defer mqttMu.Unlock()
++	switch field {
++	case "temperatura":
++		mqttTemp[room] = v
++		mqttWhen[room] = time.Now()
++	case "umidade":
++		mqttHum[room] = v
++		mqttWhen[room] = time.Now()
++	case "status":
++		mqttAlive[room] = payload == "online"
++	}
++}
+diff --git a/internal/termuxcam/config.go b/internal/termuxcam/config.go
+index 2222222..3333333 100644
+--- a/internal/termuxcam/config.go
++++ b/internal/termuxcam/config.go
+@@ -32,6 +32,9 @@ type Config struct {
+ 	TelegramChatID   string        `toml:"tg_chat_id" json:"-"`
+ 	EncryptionKey    string        `toml:"encryption_key" json:"-"`
+ 	Debug            bool          `toml:"debug"`
++	MQTTBroker       string        `toml:"mqtt_broker"`
++	MQTTUser         string        `toml:"mqtt_user"`
++	MQTTPass         string        `toml:"mqtt_pass" json:"-"`
+ }
+ 
+ func (c Config) String() string {
+@@ -95,6 +98,9 @@ func LoadConfig(configFile string) error {
+ 		TelegramChatID   string `toml:"tg_chat_id"`
+ 		EncryptionKey    string `toml:"encryption_key"`
+ 		Debug            bool   `toml:"debug"`
++		MQTTBroker       string `toml:"mqtt_broker"`
++		MQTTUser         string `toml:"mqtt_user"`
++		MQTTPass         string `toml:"mqtt_pass"`
+ 	}{
+ 		Capture:         "5m",
+ 		Camera:          1,
+@@ -130,6 +136,9 @@ func LoadConfig(configFile string) error {
+ 	AppConfig.RasplabEndpoint = parsed.RasplabEndpoint
+ 	AppConfig.EncryptionKey = parsed.EncryptionKey
+ 	AppConfig.Debug = parsed.Debug
++	AppConfig.MQTTBroker = parsed.MQTTBroker
++	AppConfig.MQTTUser = parsed.MQTTUser
++	AppConfig.MQTTPass = parsed.MQTTPass
+ 	return nil
+ }
+ 
+diff --git a/internal/termuxcam/cli.go b/internal/termuxcam/cli.go
+index 4444444..5555555 100644
+--- a/internal/termuxcam/cli.go
++++ b/internal/termuxcam/cli.go
+@@ -100,6 +100,7 @@ func (r *RunCmd) Run(ctx *kong.Context) error {
+ 
+ 	InitBot()
+ 	StartTelegramPoller()
++	go StartMQTT()
+ 	if r.Port > 0 {
+ 		go StartAPIServer(r.Port)
+ 	}
+diff --git a/internal/termuxcam/daemon.go b/internal/termuxcam/daemon.go
+index 6666666..7777777 100644
+--- a/internal/termuxcam/daemon.go
++++ b/internal/termuxcam/daemon.go
+@@ -134,6 +134,7 @@ func RunDaemonChild(port int, configFile string) {
+ 
+ 	InitBot()
+ 	StartTelegramPoller()
++	go StartMQTT()
+ 
+ 	if port > 0 {
+ 		go StartAPIServer(port)
+diff --git a/internal/termuxcam/telegram_poll.go b/internal/termuxcam/telegram_poll.go
+index 8888888..9999999 100644
+--- a/internal/termuxcam/telegram_poll.go
++++ b/internal/termuxcam/telegram_poll.go
+@@ -36,6 +36,7 @@ const helpText = `<b>termuxcam commands</b>
+ /config reload - reload the configuration file
+ /rasplab - Raspberry Pi information
++/temp [room] - sensor readings (all rooms or one)
+ /capture [camera] [burst] - take photos (camera: -1 front, 0 back, 1 front; burst: 1-5)
+ /log - send the latest log output
+ /torch on|off - flashlight
+@@ -148,6 +149,8 @@ func runCommand(text string) string {
+ 		return systemStatusText()
+ 	case "rasplab":
+ 		return rasplabCommand()
++	case "temp":
++		return tempCommand(args)
+ 	case "config":
+ 		return configCommand(args)
+ 	case "capture":
+@@ -300,6 +303,46 @@ func rasplabCommand() string {
+ 	return result
+ }
+ 
++func tempCommand(args []string) string {
++	mqttMu.RLock()
++	defer mqttMu.RUnlock()
++
++	if len(mqttTemp) == 0 && len(mqttHum) == 0 {
++		return "No sensor readings yet. Check that the ESP32s are publishing and MQTT is connected."
++	}
++
++	rooms := []string{}
++	if len(args) > 0 {
++		rooms = []string{strings.ToLower(args[0])}
++	} else {
++		seen := map[string]bool{}
++		for r := range mqttTemp {
++			seen[r] = true
++		}
++		for r := range mqttHum {
++			seen[r] = true
++		}
++		for r := range seen {
++			rooms = append(rooms, r)
++		}
++	}
++
++	var sb strings.Builder
++	sb.WriteString("🌡 <b>Sensor readings</b>\n" + rule + "\n")
++	for _, room := range rooms {
++		badge := "🔴"
++		if mqttAlive[room] {
++			badge = "🟢"
++		}
++		when := ""
++		if t, ok := mqttWhen[room]; ok {
++			when = " · " + t.Format("15:04")
++		}
++		sb.WriteString(fmt.Sprintf("• <b>%s</b> %s <code>%.1f °C</code> / <code>%.0f %%</code>%s\n",
++			html.EscapeString(room), badge, mqttTemp[room], mqttHum[room], when))
++	}
++	sb.WriteString("\n" + hintFooter)
++	return sb.String()
++}
++
+ func formatRasplabMemory(memoryMB *int64) string {
+ 	if memoryMB == nil || *memoryMB < 0 {
+ 		return "unknown"
