@@ -40,6 +40,7 @@ const helpText = `<b>termuxcam commands</b>
 /config set key=value - change a setting
 /config reload - reload the configuration file
 /rasplab - Raspberry Pi information
+/temp [room] - sensor readings (all rooms or one)
 /capture [camera] [burst] - take photos (camera: -1 front, 0 back, 1 front; burst: 1-5)
 /log - send the latest log output
 /torch on|off - flashlight
@@ -171,6 +172,8 @@ func runCommand(text string) string {
 		return systemStatusText()
 	case "rasplab":
 		return rasplabCommand()
+	case "temp":
+		return tempCommand(args)
 	case "config":
 		return configCommand(args)
 	case "capture":
@@ -261,6 +264,48 @@ func rasplabCommand() string {
 		return "rasplab response is too large to send to Telegram"
 	}
 	return result
+}
+
+func tempCommand(args []string) string {
+	mqttMu.RLock()
+	defer mqttMu.RUnlock()
+
+	if len(mqttTemp) == 0 && len(mqttHum) == 0 {
+		return "No sensor readings yet. Check that the ESP32s are publishing and MQTT is connected."
+	}
+
+	rooms := []string{}
+	if len(args) > 0 {
+		rooms = []string{strings.ToLower(args[0])}
+	} else {
+		seen := map[string]bool{}
+		for r := range mqttTemp {
+			seen[r] = true
+		}
+		for r := range mqttHum {
+			seen[r] = true
+		}
+		for r := range seen {
+			rooms = append(rooms, r)
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🌡 <b>Sensor readings</b>\n" + rule + "\n")
+	for _, room := range rooms {
+		badge := "🔴"
+		if mqttAlive[room] {
+			badge = "🟢"
+		}
+		when := ""
+		if t, ok := mqttWhen[room]; ok {
+			when = " · " + t.Format("15:04")
+		}
+		sb.WriteString(fmt.Sprintf("• <b>%s</b> %s <code>%.1f °C</code> / <code>%.0f %%</code>%s\n",
+			html.EscapeString(room), badge, mqttTemp[room], mqttHum[room], when))
+	}
+	sb.WriteString("\n" + hintFooter)
+	return sb.String()
 }
 
 func formatRasplabMemory(memoryMB *int64) string {

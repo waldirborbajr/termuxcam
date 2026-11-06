@@ -91,6 +91,7 @@ func (r *RunCmd) Run(ctx *kong.Context) error {
 
 	InitBot()
 	StartTelegramPoller()
+	go StartMQTT()
 	if r.Port > 0 {
 		go StartAPIServer(r.Port)
 	}
