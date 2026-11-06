@@ -1,6 +1,7 @@
 package termuxcam
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,6 +9,67 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestRequestChironPostsPromptAndFormatsResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/chiron" {
+			t.Errorf("request = %s %s, want POST /chiron", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+		var request struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode Chiron request: %v", err)
+		}
+		if request.Text != "What is 2 < 3?" {
+			t.Errorf("prompt = %q, want original prompt", request.Text)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answer":"Use <code> safely & clearly","strategy":"gguf","model":"Qwen <0.5B>"}`))
+	}))
+	defer server.Close()
+
+	response, err := requestChiron(server.URL+"/chiron", "What is 2 < 3?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := formatChironResponse(response)
+	for _, want := range []string{
+		"🤖 <b>Chiron</b>",
+		"Qwen &lt;0.5B&gt; · gguf",
+		"Use &lt;code&gt; safely &amp; clearly",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatted response = %q, want it to contain %q", got, want)
+		}
+	}
+	if strings.Contains(got, "<code> safely") {
+		t.Errorf("formatted answer contains unescaped HTML: %q", got)
+	}
+}
+
+func TestRequestChironRejectsInvalidEndpointAndAPIError(t *testing.T) {
+	if _, err := requestChiron("ftp://raspi.local/chiron", "hello"); err == nil {
+		t.Fatal("requestChiron() error = nil, want invalid endpoint error")
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"answer":"Generation error: model unavailable","strategy":"gguf","model":"Qwen"}`))
+	}))
+	defer server.Close()
+
+	response, err := requestChiron(server.URL, "hello")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500") {
+		t.Fatalf("requestChiron() error = %v, want HTTP 500 error", err)
+	}
+	if response.Answer != "Generation error: model unavailable" {
+		t.Errorf("response answer = %q, want API error details", response.Answer)
+	}
+}
 
 func TestRasplabCommandFormatsTelemetryAndEscapesHTML(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

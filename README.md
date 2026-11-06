@@ -276,6 +276,7 @@ starting the capture service. The TOML file also replaces the old
 | `tg_bot_token` | Telegram bot token | Required for Telegram uploads. |
 | `tg_chat_id` | Telegram chat ID | Required for Telegram uploads. |
 | `rasplab_endpoint` | HTTPS URL | Endpoint queried by Telegram's `/rasplab` command. Its default is `https://192.168.1.15:8443/rasplab`. The command accepts the endpoint's self-signed TLS certificate and does not follow redirects. |
+| `chiron_endpoint` | HTTP or HTTPS URL | Chiron API endpoint used by `/chiron <text>`. Defaults to `http://192.168.1.15:3030/chiron`. |
 | `encryption_key` | 16, 24, or 32 bytes | Optional AES key; leave empty to disable encryption. |
 | `debug` | `true` or `false` | Debug mode setting. |
 | `capture` | TOML string duration such as `"5m"` or `"1h"` | Accepted range: 1 minute to 24 hours. Invalid values leave the previous/default value unchanged. |
@@ -293,6 +294,11 @@ The endpoint must use HTTPS and return a JSON response small enough to fit
 in one Telegram message. Because its
 self-signed certificate is accepted without CA verification, configure
 only an endpoint you trust on your network.
+
+The `/chiron <text>` command sends the text as JSON (`{"text":"..."}`) to
+`chiron_endpoint` using `POST`. Chiron's JSON `answer`, `model`, and
+`strategy` fields are formatted as a Telegram reply. The command confirms
+the request immediately and sends the result when processing completes.
 
 **Editing the config while the service is running:** changes only take
 effect after a restart — the file is read once at startup, not

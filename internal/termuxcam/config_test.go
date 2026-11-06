@@ -17,6 +17,7 @@ logs_days = 7
 tg_bot_token = "bot-token"
 tg_chat_id = "12345"
 rasplab_endpoint = "https://raspi.local:8443/rasplab"
+chiron_endpoint = "http://raspi.local:3030/chiron"
 encryption_key = "0123456789abcdef"
 debug = true
 `
@@ -40,6 +41,9 @@ debug = true
 	}
 	if config.RasplabEndpoint != "https://raspi.local:8443/rasplab" {
 		t.Errorf("Rasplab endpoint = %q, want configured endpoint", config.RasplabEndpoint)
+	}
+	if config.ChironEndpoint != "http://raspi.local:3030/chiron" {
+		t.Errorf("Chiron endpoint = %q, want configured endpoint", config.ChironEndpoint)
 	}
 	if config.EncryptionKey != "0123456789abcdef" || !config.Debug {
 		t.Errorf("encryption/debug settings were not loaded: %+v", config)
@@ -74,6 +78,7 @@ func TestSaveConfigRoundTripsTOML(t *testing.T) {
 		TelegramBotToken: "bot-token",
 		TelegramChatID:   "12345",
 		RasplabEndpoint:  "https://raspi.local:8443/rasplab",
+		ChironEndpoint:   "http://raspi.local:3030/chiron",
 		EncryptionKey:    "0123456789abcdef",
 		Debug:            true,
 	}
@@ -111,6 +116,9 @@ func TestLoadConfigUsesDefaultRasplabEndpoint(t *testing.T) {
 	}
 	if got := GetConfig().RasplabEndpoint; got != defaultRasplabEndpoint {
 		t.Errorf("Rasplab endpoint = %q, want default %q", got, defaultRasplabEndpoint)
+	}
+	if got := GetConfig().ChironEndpoint; got != defaultChironEndpoint {
+		t.Errorf("Chiron endpoint = %q, want default %q", got, defaultChironEndpoint)
 	}
 }
 

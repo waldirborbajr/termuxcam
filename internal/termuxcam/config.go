@@ -18,6 +18,7 @@ var (
 )
 
 const defaultRasplabEndpoint = "https://192.168.1.15:8443/rasplab"
+const defaultChironEndpoint = "http://192.168.1.15:3030/chiron"
 
 type Config struct {
 	CaptureInterval  time.Duration `toml:"capture"`
@@ -25,6 +26,7 @@ type Config struct {
 	BurstCount       int           `toml:"burst"`
 	KeepLogsDays     int           `toml:"logs_days"`
 	RasplabEndpoint  string        `toml:"rasplab_endpoint"`
+	ChironEndpoint   string        `toml:"chiron_endpoint"`
 	TelegramBotToken string        `toml:"tg_bot_token" json:"-"`
 	TelegramChatID   string        `toml:"tg_chat_id" json:"-"`
 	EncryptionKey    string        `toml:"encryption_key" json:"-"`
@@ -36,12 +38,13 @@ type Config struct {
 
 func (c Config) String() string {
 	return fmt.Sprintf(
-		"{CaptureInterval:%s CameraMode:%d BurstCount:%d KeepLogsDays:%d RasplabEndpoint:%s TelegramConfigured:%t EncryptionEnabled:%t Debug:%t}",
+		"{CaptureInterval:%s CameraMode:%d BurstCount:%d KeepLogsDays:%d RasplabEndpoint:%s ChironEndpoint:%s TelegramConfigured:%t EncryptionEnabled:%t Debug:%t}",
 		c.CaptureInterval,
 		c.CameraMode,
 		c.BurstCount,
 		c.KeepLogsDays,
 		c.RasplabEndpoint,
+		c.ChironEndpoint,
 		c.TelegramBotToken != "" && c.TelegramChatID != "",
 		c.EncryptionKey != "",
 		c.Debug,
@@ -59,6 +62,7 @@ func LoadConfig(configFile string) error {
 		BurstCount:      1,
 		KeepLogsDays:    3,
 		RasplabEndpoint: defaultRasplabEndpoint,
+		ChironEndpoint:  defaultChironEndpoint,
 	}
 
 	data, err := os.ReadFile(configFile)
@@ -75,6 +79,7 @@ func LoadConfig(configFile string) error {
 		Burst            int    `toml:"burst"`
 		LogsDays         int    `toml:"logs_days"`
 		RasplabEndpoint  string `toml:"rasplab_endpoint"`
+		ChironEndpoint   string `toml:"chiron_endpoint"`
 		TelegramBotToken string `toml:"tg_bot_token"`
 		TelegramChatID   string `toml:"tg_chat_id"`
 		EncryptionKey    string `toml:"encryption_key"`
@@ -88,6 +93,7 @@ func LoadConfig(configFile string) error {
 		Burst:           1,
 		LogsDays:        3,
 		RasplabEndpoint: defaultRasplabEndpoint,
+		ChironEndpoint:  defaultChironEndpoint,
 	}
 
 	if err := toml.Unmarshal(data, &parsed); err != nil {
@@ -108,6 +114,7 @@ func LoadConfig(configFile string) error {
 	AppConfig.TelegramBotToken = parsed.TelegramBotToken
 	AppConfig.TelegramChatID = parsed.TelegramChatID
 	AppConfig.RasplabEndpoint = parsed.RasplabEndpoint
+	AppConfig.ChironEndpoint = parsed.ChironEndpoint
 	AppConfig.EncryptionKey = parsed.EncryptionKey
 	AppConfig.Debug = parsed.Debug
 	AppConfig.MQTTBroker = parsed.MQTTBroker
@@ -177,6 +184,7 @@ func saveConfig(config Config) error {
 		Burst            int    `toml:"burst"`
 		LogsDays         int    `toml:"logs_days"`
 		RasplabEndpoint  string `toml:"rasplab_endpoint"`
+		ChironEndpoint   string `toml:"chiron_endpoint"`
 		TelegramBotToken string `toml:"tg_bot_token"`
 		TelegramChatID   string `toml:"tg_chat_id"`
 		EncryptionKey    string `toml:"encryption_key"`
@@ -187,6 +195,7 @@ func saveConfig(config Config) error {
 		Burst:            config.BurstCount,
 		LogsDays:         config.KeepLogsDays,
 		RasplabEndpoint:  config.RasplabEndpoint,
+		ChironEndpoint:   config.ChironEndpoint,
 		TelegramBotToken: config.TelegramBotToken,
 		TelegramChatID:   config.TelegramChatID,
 		EncryptionKey:    config.EncryptionKey,

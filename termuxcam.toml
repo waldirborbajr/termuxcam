@@ -5,6 +5,9 @@ tg_chat_id = ""
 # HTTPS endpoint used by the /rasplab Telegram command
 rasplab_endpoint = "https://192.168.1.15:8443/rasplab"
 
+# HTTP endpoint used by the /chiron Telegram command
+chiron_endpoint = "http://192.168.1.15:3030/chiron"
+
 # Optional 16, 24, or 32-byte AES key. Leave empty to disable encryption.
 encryption_key = ""
 

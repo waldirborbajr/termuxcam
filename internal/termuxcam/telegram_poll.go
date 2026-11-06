@@ -28,6 +28,10 @@ const logTailBytes = 600
 
 const rasplabMaxResponseBytes = 3500
 
+const chironMaxResponseBytes = 64 * 1024
+
+const chironMaxAnswerRunes = 3000
+
 const rule = "━━━━━━━━━━━━━━━━━━━━"
 
 const hintFooter = "ℹ️ Send /help for more commands."
@@ -40,6 +44,7 @@ const helpText = `<b>termuxcam commands</b>
 /config set key=value - change a setting
 /config reload - reload the configuration file
 /rasplab - Raspberry Pi information
+/chiron <text> - ask the Chiron AI
 /temp [room] - sensor readings (all rooms or one)
 /capture [camera] [burst] - take photos (camera: -1 front, 0 back, 1 front; burst: 1-5)
 /log - send the latest log output
@@ -172,6 +177,8 @@ func runCommand(text string) string {
 		return systemStatusText()
 	case "rasplab":
 		return rasplabCommand()
+	case "chiron":
+		return chironCommand(args)
 	case "temp":
 		return tempCommand(args)
 	case "config":
@@ -185,6 +192,119 @@ func runCommand(text string) string {
 	default:
 		return "Unknown command.\n" + hintFooter
 	}
+}
+
+type chironResponse struct {
+	Answer   string `json:"answer"`
+	Strategy string `json:"strategy"`
+	Model    string `json:"model"`
+}
+
+func chironCommand(args []string) string {
+	prompt := strings.TrimSpace(strings.Join(args, " "))
+	if prompt == "" {
+		return "usage: /chiron <text>"
+	}
+
+	endpoint := GetConfig().ChironEndpoint
+	go func() {
+		response, err := requestChiron(endpoint, prompt)
+		if err != nil {
+			if response.Answer != "" {
+				sendText(fmt.Sprintf("❌ <b>Chiron request failed</b>\n%s\n\n%s",
+					html.EscapeString(err.Error()), formatChironResponse(response)))
+				return
+			}
+			sendText("❌ <b>Chiron request failed</b>\n" + html.EscapeString(err.Error()))
+			return
+		}
+		sendText(formatChironResponse(response))
+	}()
+	return "⏳ Chiron is processing your request."
+}
+
+func requestChiron(endpoint, prompt string) (chironResponse, error) {
+	parsedEndpoint, err := url.ParseRequestURI(endpoint)
+	if err != nil || (parsedEndpoint.Scheme != "http" && parsedEndpoint.Scheme != "https") || parsedEndpoint.Host == "" {
+		return chironResponse{}, fmt.Errorf("chiron endpoint must be a valid HTTP or HTTPS URL")
+	}
+
+	body, err := json.Marshal(struct {
+		Text string `json:"text"`
+	}{Text: prompt})
+	if err != nil {
+		return chironResponse{}, fmt.Errorf("encode Chiron request: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return chironResponse{}, fmt.Errorf("create Chiron request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	client := &http.Client{
+		Timeout: 2 * time.Minute,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return chironResponse{}, fmt.Errorf("Chiron request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, chironMaxResponseBytes+1))
+	if err != nil {
+		return chironResponse{}, fmt.Errorf("could not read Chiron response: %w", err)
+	}
+	if len(responseBody) > chironMaxResponseBytes {
+		return chironResponse{}, fmt.Errorf("Chiron response is too large")
+	}
+
+	var response chironResponse
+	if err := json.Unmarshal(responseBody, &response); err != nil {
+		return chironResponse{}, fmt.Errorf("Chiron API returned invalid JSON: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return response, fmt.Errorf("Chiron API returned HTTP %d", resp.StatusCode)
+	}
+	if strings.TrimSpace(response.Answer) == "" {
+		return response, fmt.Errorf("Chiron returned an empty answer")
+	}
+	return response, nil
+}
+
+func formatChironResponse(response chironResponse) string {
+	answer := strings.TrimSpace(response.Answer)
+	var escapedAnswer strings.Builder
+	runes := 0
+	for _, r := range answer {
+		escaped := html.EscapeString(string(r))
+		escapedRunes := []rune(escaped)
+		if runes+len(escapedRunes) > chironMaxAnswerRunes {
+			escapedAnswer.WriteString("…")
+			break
+		}
+		escapedAnswer.WriteString(escaped)
+		runes += len(escapedRunes)
+	}
+
+	var details []string
+	if response.Model != "" {
+		details = append(details, html.EscapeString(response.Model))
+	}
+	if response.Strategy != "" {
+		details = append(details, html.EscapeString(response.Strategy))
+	}
+
+	var formatted strings.Builder
+	formatted.WriteString("🤖 <b>Chiron</b>\n")
+	if len(details) > 0 {
+		formatted.WriteString("🧠 <code>" + strings.Join(details, " · ") + "</code>\n")
+	}
+	formatted.WriteString(rule + "\n\n<blockquote>" + escapedAnswer.String() + "</blockquote>")
+	return formatted.String()
 }
 
 func rasplabCommand() string {
